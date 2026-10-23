@@ -33,10 +33,7 @@ export function precessToDate(
   date: Date,
   rotation: Astronomy.RotationMatrix = Astronomy.Rotation_EQJ_EQD(date),
 ): EquatorialOfDate {
-  const eqj = Astronomy.VectorFromSphere(
-    new Astronomy.Spherical(decDegJ2000, raHoursJ2000 * 15.0, 1.0),
-    date,
-  );
+  const eqj = Astronomy.VectorFromSphere(new Astronomy.Spherical(decDegJ2000, raHoursJ2000 * 15.0, 1.0), date);
   const eqd = Astronomy.RotateVector(rotation, eqj);
   const eq = Astronomy.EquatorFromVector(eqd);
   return { raHours: eq.ra, decDeg: eq.dec, vector: eqd };

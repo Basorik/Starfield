@@ -1,11 +1,6 @@
 import * as Astronomy from 'astronomy-engine';
 
-import type {
-  Hemisphere,
-  ObserverLocation,
-  PolarAlignmentState,
-  ReticleStar,
-} from '@/types/astro';
+import type { Hemisphere, ObserverLocation, PolarAlignmentState, ReticleStar } from '@/types/astro';
 import { localSiderealTime, mod, precessToDate } from './coords';
 
 /** Radius of the simulated polar-scope field, in degrees from the celestial pole. */
@@ -77,11 +72,7 @@ function placeStar(
   return { hourAngleHours, polarDistanceDeg, angleDeg, x: r * Math.sin(a), y: r * Math.cos(a) };
 }
 
-export function computePolarAlignment(
-  location: ObserverLocation,
-  date: Date,
-  inverted = true,
-): PolarAlignmentState {
+export function computePolarAlignment(location: ObserverLocation, date: Date, inverted = true): PolarAlignmentState {
   const hemisphere = hemisphereFor(location.latitude);
   const lastHours = localSiderealTime(date, location.longitude);
   const rotation = Astronomy.Rotation_EQJ_EQD(date);

@@ -10,18 +10,22 @@ import {
   formatSiderealTime,
   reticleAngleDeg,
 } from '../polarAlignment';
-import {
-  computeNightContext,
-  computeTargetReport,
-  rankTargets,
-  sessionDateFor,
-  targetHorizon,
-} from '../targetPlanner';
+import { computeNightContext, computeTargetReport, rankTargets, sessionDateFor, targetHorizon } from '../targetPlanner';
 import { altitudeDeg, gmstDeg, precessJ2000, sunCrossing } from './reference';
 
-const SYDNEY: ObserverLocation = { latitude: -33.8688, longitude: 151.2093, elevationMeters: 58, isManualOverride: true };
+const SYDNEY: ObserverLocation = {
+  latitude: -33.8688,
+  longitude: 151.2093,
+  elevationMeters: 58,
+  isManualOverride: true,
+};
 const LONDON: ObserverLocation = { latitude: 51.5074, longitude: -0.1278, elevationMeters: 11, isManualOverride: true };
-const NEW_YORK: ObserverLocation = { latitude: 40.7128, longitude: -74.006, elevationMeters: 10, isManualOverride: true };
+const NEW_YORK: ObserverLocation = {
+  latitude: 40.7128,
+  longitude: -74.006,
+  elevationMeters: 10,
+  isManualOverride: true,
+};
 
 const CARINA: DSOObject = {
   id: 'NGC 3372',
@@ -58,7 +62,7 @@ const angleDiff = (a: number, b: number) => Math.abs(((a - b + 540) % 360) - 180
 /** Reference hour angle (hours) from Meeus GMST + rigorous precession. */
 function referenceHourAngle(ra: number, dec: number, lon: number, date: Date): number {
   const ofDate = precessJ2000(ra, dec, date);
-  return (((gmstDeg(date) + lon) / 15 - ofDate.raHours) % 24 + 24) % 24;
+  return ((((gmstDeg(date) + lon) / 15 - ofDate.raHours) % 24) + 24) % 24;
 }
 
 describe('reticle geometry', () => {
@@ -129,8 +133,20 @@ describe('Southern Hemisphere — Sydney, NSW, 23 Oct 2026', () => {
     expect(astronomicalDusk).not.toBeNull();
     expect(astronomicalDawn).not.toBeNull();
 
-    const refDusk = sunCrossing(SYDNEY.latitude, SYDNEY.longitude, new Date('2026-10-23T07:00:00Z'), new Date('2026-10-23T11:00:00Z'), -18);
-    const refDawn = sunCrossing(SYDNEY.latitude, SYDNEY.longitude, new Date('2026-10-23T16:00:00Z'), new Date('2026-10-23T19:00:00Z'), -18);
+    const refDusk = sunCrossing(
+      SYDNEY.latitude,
+      SYDNEY.longitude,
+      new Date('2026-10-23T07:00:00Z'),
+      new Date('2026-10-23T11:00:00Z'),
+      -18,
+    );
+    const refDawn = sunCrossing(
+      SYDNEY.latitude,
+      SYDNEY.longitude,
+      new Date('2026-10-23T16:00:00Z'),
+      new Date('2026-10-23T19:00:00Z'),
+      -18,
+    );
     expect(Math.abs(astronomicalDusk!.getTime() - refDusk.getTime())).toBeLessThan(2 * MIN);
     expect(Math.abs(astronomicalDawn!.getTime() - refDawn.getTime())).toBeLessThan(2 * MIN);
 
@@ -213,7 +229,7 @@ describe('Northern Hemisphere — Polaris clock face', () => {
     const ref = precessJ2000(POLARIS.raHours, POLARIS.decDeg, new Date('2026-10-23T22:00:00Z'));
     expect(ref.raHours).toBeGreaterThan(2.9);
     expect(ref.raHours).toBeLessThan(3.2);
-    expect(((state.localSiderealTimeHours - state.hourAngleHours) % 24 + 24) % 24).toBeCloseTo(ref.raHours, 1);
+    expect((((state.localSiderealTimeHours - state.hourAngleHours) % 24) + 24) % 24).toBeCloseTo(ref.raHours, 1);
   });
 
   it('flags a meridian flip when M31 transits mid-window over New York', () => {
@@ -238,8 +254,14 @@ describe('planner utilities', () => {
     expect(ranked[1].optimalStart).toBeNull();
   });
 
-  it('treats the small hours as part of the previous evening', () => {
-    expect(sessionDateFor(new Date(2026, 9, 24, 1, 30)).getDate()).toBe(23);
-    expect(sessionDateFor(new Date(2026, 9, 23, 19, 0)).getDate()).toBe(23);
+  it('picks the session evening from the site longitude, not the device time zone', () => {
+    // 01:30 AEDT on the 24th (14:30 UTC on the 23rd) still belongs to the 23rd's night.
+    expect(sessionDateFor(new Date('2026-10-23T14:30:00Z'), SYDNEY.longitude).getDate()).toBe(23);
+    // 22:52 AEDT on the 23rd (11:52 UTC) — same night.
+    expect(sessionDateFor(new Date('2026-10-23T11:52:00Z'), SYDNEY.longitude).getDate()).toBe(23);
+    // 19:00 in New York on the 23rd (23:00 UTC).
+    expect(sessionDateFor(new Date('2026-10-23T23:00:00Z'), NEW_YORK.longitude).getDate()).toBe(23);
+    // 03:00 in New York on the 24th (07:00 UTC).
+    expect(sessionDateFor(new Date('2026-10-24T07:00:00Z'), NEW_YORK.longitude).getDate()).toBe(23);
   });
 });

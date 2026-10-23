@@ -1,12 +1,6 @@
 import * as Astronomy from 'astronomy-engine';
 
-import type {
-  AltitudeSample,
-  DSOObject,
-  NightWindowReport,
-  ObserverLocation,
-  TwilightTimes,
-} from '@/types/astro';
+import type { AltitudeSample, DSOObject, NightWindowReport, ObserverLocation, TwilightTimes } from '@/types/astro';
 import { SIDEREAL_RATE, localSiderealTime, mod, precessToDate, toObserver } from './coords';
 
 const MINUTE_MS = 60_000;
@@ -62,11 +56,15 @@ export function sessionBounds(location: ObserverLocation, date: Date): { start: 
   return { start, end: new Date(start.getTime() + SESSION_LENGTH_HOURS * HOUR_MS) };
 }
 
-/** Before local noon the "current session" is the night that started yesterday evening. */
-export function sessionDateFor(now: Date): Date {
-  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  if (now.getHours() < 12) d.setDate(d.getDate() - 1);
-  return d;
+/**
+ * The evening whose session contains `now` at the observer's longitude: before
+ * local mean noon the current session is the night that began yesterday.
+ * Returned as device-local midnight of that calendar day (see localMeanTime).
+ */
+export function sessionDateFor(now: Date, longitudeDeg: number): Date {
+  const lmt = new Date(now.getTime() + (longitudeDeg / 15.0) * HOUR_MS);
+  const dayOffset = lmt.getUTCHours() < 12 ? -1 : 0;
+  return new Date(lmt.getUTCFullYear(), lmt.getUTCMonth(), lmt.getUTCDate() + dayOffset);
 }
 
 function searchSun(observer: Astronomy.Observer, direction: 1 | -1, from: Date, altitude: number): Date | null {
@@ -140,7 +138,12 @@ export function computeNightContext(location: ObserverLocation, date: Date): Nig
 }
 
 /** Topocentric altitude/azimuth of a J2000 catalog position (refraction included). */
-export function targetHorizon(dso: DSOObject, observer: Astronomy.Observer, time: Date, rotation?: Astronomy.RotationMatrix) {
+export function targetHorizon(
+  dso: DSOObject,
+  observer: Astronomy.Observer,
+  time: Date,
+  rotation?: Astronomy.RotationMatrix,
+) {
   const ofDate = precessToDate(dso.raHours, dso.decDeg, time, rotation);
   const hor = Astronomy.Horizon(time, observer, ofDate.raHours, ofDate.decDeg, 'normal');
   return { altitude: hor.altitude, azimuth: hor.azimuth, ofDate };
@@ -216,7 +219,7 @@ export function computeTargetReport(
   // Longest contiguous run of shootable samples.
   let bestStart = -1;
   let bestEnd = -1;
-  for (let i = 0; i < ok.length; ) {
+  for (let i = 0; i < ok.length;) {
     if (!ok[i]) {
       i++;
       continue;
@@ -234,16 +237,19 @@ export function computeTargetReport(
   let optimalEnd: Date | null = null;
   if (bestStart >= 0) {
     optimalStart =
-      bestStart > 0 ? refineEdge(ctx, dso, options, ctx.times[bestStart - 1], ctx.times[bestStart]) : ctx.times[bestStart];
+      bestStart > 0
+        ? refineEdge(ctx, dso, options, ctx.times[bestStart - 1], ctx.times[bestStart])
+        : ctx.times[bestStart];
     optimalEnd =
-      bestEnd < ok.length - 1 ? refineEdge(ctx, dso, options, ctx.times[bestEnd + 1], ctx.times[bestEnd]) : ctx.times[bestEnd];
+      bestEnd < ok.length - 1
+        ? refineEdge(ctx, dso, options, ctx.times[bestEnd + 1], ctx.times[bestEnd])
+        : ctx.times[bestEnd];
   }
   const totalShootableMinutes =
     optimalStart && optimalEnd ? Math.round((optimalEnd.getTime() - optimalStart.getTime()) / MINUTE_MS) : 0;
 
   const meridianTransitTime = meridianTransit(ctx, dso);
-  const transitInSession =
-    meridianTransitTime >= ctx.sessionStart && meridianTransitTime <= ctx.sessionEnd;
+  const transitInSession = meridianTransitTime >= ctx.sessionStart && meridianTransitTime <= ctx.sessionEnd;
 
   let maxAltitudeDeg = Math.max(...samples.map((s) => s.targetAltitudeDeg));
   if (transitInSession) {
@@ -251,10 +257,10 @@ export function computeTargetReport(
   }
 
   const windowSamples =
-    optimalStart && optimalEnd
-      ? samples.filter((s) => s.time >= optimalStart! && s.time <= optimalEnd!)
-      : samples;
-  const minMoonSeparationDeg = Math.min(...(windowSamples.length ? windowSamples : samples).map((s) => s.moonSeparationDeg));
+    optimalStart && optimalEnd ? samples.filter((s) => s.time >= optimalStart! && s.time <= optimalEnd!) : samples;
+  const minMoonSeparationDeg = Math.min(
+    ...(windowSamples.length ? windowSamples : samples).map((s) => s.moonSeparationDeg),
+  );
 
   const margin = FLIP_MARGIN_MINUTES * MINUTE_MS;
   const meridianFlipRequiredInWindow =
