@@ -7,7 +7,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button, Card, Chip, SectionTitle, ThemedSwitch } from '@/components/ui';
 import { restorePro } from '@/lib/billing';
 import { formatLatLon, parseAngle } from '@/lib/format';
-import { RIG_PRESETS, useAppStore, type GpsStatus, type HorizonFloor } from '@/store/useAppStore';
+import {
+  DARKNESS_MODES,
+  DIM_LEVELS,
+  RIG_PRESETS,
+  useAppStore,
+  type GpsStatus,
+  type HorizonFloor,
+} from '@/store/useAppStore';
 import type { ObserverLocation } from '@/types/astro';
 
 const GPS_STATUS_TEXT: Record<GpsStatus, string> = {
@@ -242,10 +249,50 @@ export default function SettingsScreen() {
           <View className="flex-1 pr-3">
             <Text className="text-sm text-primary">Avoid the Moon</Text>
             <Text className="text-xs text-secondary">
-              Exclude time when the Moon is up and within 45° of the target.
+              Exclude time when the Moon is up and close to the target: 33° for a crescent up to 60° at full; ignored
+              below 10% illumination.
             </Text>
           </View>
           <ThemedSwitch value={store.avoidMoon} onValueChange={(v) => update({ avoidMoon: v })} palette={palette} />
+        </View>
+        <Text className="mt-4 text-xs text-secondary">
+          Darkness — Auto uses astronomical darkness and falls back to nautical (then civil) twilight on summer nights
+          when the Sun never gets low enough.
+        </Text>
+        <View className="mt-2 flex-row flex-wrap gap-2">
+          {DARKNESS_MODES.map((m) => (
+            <Chip
+              key={m.key}
+              label={m.label}
+              active={store.darknessMode === m.key}
+              palette={palette}
+              onPress={() => update({ darknessMode: m.key })}
+            />
+          ))}
+        </View>
+      </Card>
+
+      <SectionTitle>Polar scope screen</SectionTitle>
+      <Card>
+        <View className="flex-row items-center">
+          <View className="flex-1 pr-3">
+            <Text className="text-sm text-primary">Dim the screen</Text>
+            <Text className="text-xs text-secondary">
+              Lowers brightness while the Polar Scope tab is open and restores it when you leave.
+            </Text>
+          </View>
+          <ThemedSwitch value={store.dimScreen} onValueChange={(v) => update({ dimScreen: v })} palette={palette} />
+        </View>
+        <View className="mt-3 flex-row gap-2">
+          {DIM_LEVELS.map((l) => (
+            <Chip
+              key={l.label}
+              label={l.label}
+              active={store.dimLevel === l.value}
+              palette={palette}
+              onPress={() => update({ dimLevel: l.value, dimScreen: true })}
+            />
+          ))}
         </View>
       </Card>
 

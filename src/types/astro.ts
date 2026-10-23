@@ -66,6 +66,34 @@ export interface TwilightTimes {
   civilDawn: Date | null;
 }
 
+/** How dark the sky must be: the Sun's altitude limit in degrees. */
+export type DarknessLevel = 'ASTRONOMICAL' | 'NAUTICAL' | 'CIVIL';
+export type DarknessMode = 'AUTO' | 'ASTRONOMICAL' | 'NAUTICAL';
+
+export interface DarkLimit {
+  level: DarknessLevel;
+  sunLimitDeg: number; // -18, -12 or -6
+  /** AUTO had to relax the limit because the Sun never reaches -18° tonight. */
+  isFallback: boolean;
+}
+
+export interface NightSummary {
+  date: Date;
+  sessionStart: Date;
+  sessionEnd: Date;
+  darkLimit: DarkLimit;
+  darkStart: Date | null; // longest run with the Sun below the limit
+  darkEnd: Date | null;
+  darkMinutes: number;
+  darkAllSession: boolean; // polar night: dark for the whole sampled session
+  moonIlluminationPct: number;
+  moonrise: Date | null; // within the session, if any
+  moonset: Date | null;
+  moonFreeStart: Date | null; // longest run that is dark AND the Moon is below the horizon
+  moonFreeEnd: Date | null;
+  moonFreeMinutes: number;
+}
+
 export interface NightWindowReport {
   dso: DSOObject;
   date: Date;
@@ -78,8 +106,15 @@ export interface NightWindowReport {
   transitInSession: boolean;
   maxAltitudeDeg: number; // Highest altitude reached during the session
   moonIlluminationPct: number; // 0 to 100%
-  minMoonSeparationDeg: number;
-  // Longest contiguous window where Sun <= -18° AND Target Altitude >= minHorizonDeg (+ optional Moon rule)
+  /** Closest approach while the Moon is above the horizon in the window; null if it stays down. */
+  minMoonSeparationDeg: number | null;
+  moonUpMinutesInWindow: number;
+  /** 0 (no Moon interference) … 1 (full Moon beside the target for the whole window). */
+  moonPenalty: number;
+  /** Ranking score: usable minutes discounted by Moon interference. */
+  score: number;
+  sunLimitDeg: number;
+  // Longest contiguous window where Sun <= limit AND Target Altitude >= minHorizonDeg (+ optional Moon rule)
   optimalStart: Date | null;
   optimalEnd: Date | null;
   totalShootableMinutes: number;

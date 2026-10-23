@@ -4,8 +4,13 @@ An offline field companion for portable star trackers (Sky-Watcher Star Adventur
 
 The app has two modules, and both run fully offline using `astronomy-engine`:
 
-1. **Polar Scope Reticle.** This tab shows where Polaris sits on the Sky-Watcher 12-hour or iOptron 0–11 clock dial. In the Southern Hemisphere it instead draws the live orientation of the Octans trapezoid (σ, χ, τ, υ Octantis). You can switch between the inverted polar-scope view and the naked-eye view, and scrub the time by up to ±6 hours.
-2. **Target Window & Meridian Flip Planner.** This tab ranks about 70 deep-sky targets by how long each one stays above your horizon floor during astronomical darkness, with an optional Moon-avoidance rule. Each target gets a twilight-banded altitude chart that marks the meridian transit and the "sweet spot" window.
+1. **Polar Scope.** Three views:
+   - **Reticle** shows where Polaris sits on the Sky-Watcher 12-hour or iOptron 0–11 clock dial. In the Southern Hemisphere it instead draws the live orientation of the Octans trapezoid (σ, χ, τ, υ Octantis). You can switch between the inverted polar-scope view and the naked-eye view, and scrub the time by up to ±6 hours.
+   - **Finder** is a naked-eye star chart around the pole, with your horizon drawn in and star-hop guides: Crux and the Pointers in the south, the Big Dipper pointers in the north.
+   - **Rough align** uses the phone's compass (true north where the OS can correct for magnetic declination) and its tilt sensor to set the tracker's azimuth and altitude before the pole star is visible.
+
+   The screen dims while this tab is open and goes back to your normal brightness when you leave it.
+2. **Target Window & Meridian Flip Planner.** This tab ranks about 70 deep-sky targets by Moon-weighted usable time above your horizon floor. Each target gets a twilight-banded altitude chart that marks the meridian transit and the "sweet spot" window. The night summary shows Moon rise and set times and the Moon-free part of the dark window. In **Auto** darkness mode the planner falls back to nautical (then civil) twilight on summer nights when the Sun never reaches −18°. A Pro **dark-sky calendar** lists Moon-free hours for each of the next 30 nights.
 
 ## Getting started
 
@@ -65,6 +70,8 @@ src/
 - **The night window.** Each session runs from 17:00 to 07:00 *local mean solar time* at the site's longitude. This keeps it centred on the real night whatever time zone the device uses. Displayed clock times use the device time zone.
 - **Twilight.** Twilight times come from `SearchAltitude` on the geometric Sun (no refraction). Shoot windows are the longest contiguous run of 10-minute samples that pass the dark, altitude and (optional) Moon rules. Each window edge is refined by bisection to about 5 s.
 - **Meridian flip warning.** The transit is the upper culmination nearest the middle of the night. A flip is flagged when the transit falls more than 15 minutes inside both ends of the window.
+- **Moon.** Moon separation and the Moon's time in the window only count while the Moon is above the horizon. The optional avoidance rule ignores a Moon under 10% lit and otherwise needs a separation of 30° + 30° × illumination (60° at full Moon). Ranking uses the usable minutes, discounted by how bright and how close the Moon is.
+- **Pole finder.** Stars are drawn in an azimuthal-equidistant projection around the visible pole, rotated by local sidereal time, as seen facing the pole with the zenith at the top. The horizon is the line where altitude is 0°.
 
 The tests cross-check twilight, altitudes and hour angles against separate Meeus formulas for Sydney, London and New York, and they pass in any device time zone.
 
@@ -73,6 +80,6 @@ The tests cross-check twilight, altitudes and hour angles against separate Meeus
 | Free | Pro ($19.99 lifetime) |
 | --- | --- |
 | Live reticle (Polaris + Octans) for here and now | Polar scope time scrubbing (±6 h) |
-| Tonight's top 3 ranked targets | Tomorrow / any future date |
-| Static altitude chart | Full catalog, focal-length filters, custom RA/Dec targets |
-| Horizon floor + Moon avoidance | Saved GPS sites, interactive chart inspector |
+| Pole finder chart, rough alignment, screen dimming | Tomorrow / any future date, dark-sky calendar |
+| Tonight's top 3 ranked targets | Full catalog, focal-length filters, custom RA/Dec targets |
+| Static altitude chart, horizon floor, Moon avoidance, darkness mode | Saved GPS sites, interactive chart inspector |

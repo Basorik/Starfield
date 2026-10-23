@@ -76,6 +76,7 @@ function RootStack() {
     <Stack screenOptions={{ contentStyle: { backgroundColor: palette.bg } }}>
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="paywall" options={{ presentation: 'modal', headerShown: false }} />
+      <Stack.Screen name="calendar" options={{ presentation: 'modal', headerShown: false }} />
     </Stack>
   );
 }

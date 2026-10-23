@@ -9,6 +9,7 @@ export const PRO_FALLBACK_PRICE = '$19.99';
 /** Everything PolarGrid Pro unlocks; the free tier is fully functional for "now, here". */
 export const PRO_FEATURES = [
   'Plan future dates — dark-site weekends weeks or months ahead',
+  'Dark-sky calendar: Moon-free hours for every night of the month',
   'Full deep-sky catalog with ranked shoot windows',
   'Custom RA/Dec target entry',
   'Focal length filtering',

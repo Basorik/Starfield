@@ -1,6 +1,15 @@
 import * as Astronomy from 'astronomy-engine';
 
-import type { AltitudeSample, DSOObject, NightWindowReport, ObserverLocation, TwilightTimes } from '@/types/astro';
+import type {
+  AltitudeSample,
+  DarkLimit,
+  DarknessMode,
+  DSOObject,
+  NightSummary,
+  NightWindowReport,
+  ObserverLocation,
+  TwilightTimes,
+} from '@/types/astro';
 import { SIDEREAL_RATE, localSiderealTime, mod, precessToDate, toObserver } from './coords';
 
 const MINUTE_MS = 60_000;
@@ -10,13 +19,18 @@ export const SESSION_START_HOUR = 17; // local mean solar time
 export const SESSION_LENGTH_HOURS = 14; // 17:00 → 07:00 next morning
 export const SAMPLE_STEP_MINUTES = 10;
 export const ASTRONOMICAL_TWILIGHT_DEG = -18.0;
-export const MOON_AVOIDANCE_SEPARATION_DEG = 45.0;
+export const NAUTICAL_TWILIGHT_DEG = -12.0;
+export const CIVIL_TWILIGHT_DEG = -6.0;
 export const FLIP_MARGIN_MINUTES = 15;
+/** Below this illumination the Moon is ignored by the avoidance rule. */
+export const MOON_IGNORE_FRACTION = 0.1;
 
 export interface PlannerOptions {
   minHorizonDeg: number;
-  /** Also require the Moon to be set or at least 45° away from the target. */
+  /** Require the Moon to be set, faint, or far enough away (see moonSeparationRequiredDeg). */
   avoidMoon: boolean;
+  /** The Sun must be at or below this altitude (default: astronomical darkness, -18°). */
+  sunLimitDeg?: number;
 }
 
 export const DEFAULT_PLANNER_OPTIONS: PlannerOptions = { minHorizonDeg: 30, avoidMoon: false };
@@ -33,6 +47,8 @@ export interface NightContext {
   sessionEnd: Date;
   twilight: TwilightTimes;
   moonIlluminationPct: number;
+  moonrise: Date | null;
+  moonset: Date | null;
   times: Date[];
   rotations: Astronomy.RotationMatrix[];
   sunAltitudes: number[];
@@ -77,12 +93,12 @@ export function computeTwilight(location: ObserverLocation, date: Date): Twiligh
   // evening's dusk and the next ascending crossing is tomorrow morning's dawn.
   const noon = localMeanTime(date, location.longitude, 12);
   return {
-    civilDusk: searchSun(observer, -1, noon, -6),
-    nauticalDusk: searchSun(observer, -1, noon, -12),
+    civilDusk: searchSun(observer, -1, noon, CIVIL_TWILIGHT_DEG),
+    nauticalDusk: searchSun(observer, -1, noon, NAUTICAL_TWILIGHT_DEG),
     astronomicalDusk: searchSun(observer, -1, noon, ASTRONOMICAL_TWILIGHT_DEG),
     astronomicalDawn: searchSun(observer, 1, noon, ASTRONOMICAL_TWILIGHT_DEG),
-    nauticalDawn: searchSun(observer, 1, noon, -12),
-    civilDawn: searchSun(observer, 1, noon, -6),
+    nauticalDawn: searchSun(observer, 1, noon, NAUTICAL_TWILIGHT_DEG),
+    civilDawn: searchSun(observer, 1, noon, CIVIL_TWILIGHT_DEG),
   };
 }
 
@@ -95,6 +111,11 @@ function bodyAltitude(body: Astronomy.Body, observer: Astronomy.Observer, time: 
   const eq = Astronomy.Equator(body, time, observer, true, true);
   const refraction = body === Astronomy.Body.Sun ? undefined : 'normal';
   return { altitude: Astronomy.Horizon(time, observer, eq.ra, eq.dec, refraction).altitude, vector: eq.vec };
+}
+
+function moonEvent(observer: Astronomy.Observer, direction: 1 | -1, start: Date, end: Date): Date | null {
+  const event = Astronomy.SearchRiseSet(Astronomy.Body.Moon, observer, direction, start, 1)?.date ?? null;
+  return event && event <= end ? event : null;
 }
 
 export function computeNightContext(location: ObserverLocation, date: Date): NightContext {
@@ -129,12 +150,41 @@ export function computeNightContext(location: ObserverLocation, date: Date): Nig
     sessionEnd: end,
     twilight: computeTwilight(location, date),
     moonIlluminationPct,
+    moonrise: moonEvent(observer, 1, start, end),
+    moonset: moonEvent(observer, -1, start, end),
     times,
     rotations,
     sunAltitudes,
     moonAltitudes,
     moonVectors,
   };
+}
+
+/**
+ * The Sun limit to plan against. AUTO prefers astronomical darkness and falls
+ * back to nautical, then civil, twilight on nights the Sun never gets that low
+ * (high-latitude summers), so the planner still has something to offer.
+ */
+export function resolveDarkLimit(ctx: NightContext, mode: DarknessMode): DarkLimit {
+  if (mode === 'ASTRONOMICAL')
+    return { level: 'ASTRONOMICAL', sunLimitDeg: ASTRONOMICAL_TWILIGHT_DEG, isFallback: false };
+  if (mode === 'NAUTICAL') return { level: 'NAUTICAL', sunLimitDeg: NAUTICAL_TWILIGHT_DEG, isFallback: false };
+  const lowestSun = Math.min(...ctx.sunAltitudes);
+  if (lowestSun <= ASTRONOMICAL_TWILIGHT_DEG) {
+    return { level: 'ASTRONOMICAL', sunLimitDeg: ASTRONOMICAL_TWILIGHT_DEG, isFallback: false };
+  }
+  if (lowestSun <= NAUTICAL_TWILIGHT_DEG) {
+    return { level: 'NAUTICAL', sunLimitDeg: NAUTICAL_TWILIGHT_DEG, isFallback: true };
+  }
+  return { level: 'CIVIL', sunLimitDeg: CIVIL_TWILIGHT_DEG, isFallback: true };
+}
+
+/**
+ * Separation the avoidance rule requires from a Moon of the given illuminated
+ * fraction: ignored below 10%, 33° for a thin crescent, 60° at full Moon.
+ */
+export function moonSeparationRequiredDeg(illuminatedFraction: number): number {
+  return illuminatedFraction < MOON_IGNORE_FRACTION ? 0 : 30 + 30 * illuminatedFraction;
 }
 
 /** Topocentric altitude/azimuth of a J2000 catalog position (refraction included). */
@@ -149,13 +199,24 @@ export function targetHorizon(
   return { altitude: hor.altitude, azimuth: hor.azimuth, ofDate };
 }
 
-function isShootable(sample: AltitudeSample, options: PlannerOptions): boolean {
-  if (sample.sunAltitudeDeg > ASTRONOMICAL_TWILIGHT_DEG) return false;
+function isShootable(sample: AltitudeSample, options: PlannerOptions, moonFraction: number): boolean {
+  if (sample.sunAltitudeDeg > (options.sunLimitDeg ?? ASTRONOMICAL_TWILIGHT_DEG)) return false;
   if (sample.targetAltitudeDeg < options.minHorizonDeg) return false;
-  if (options.avoidMoon && sample.moonAltitudeDeg > 0 && sample.moonSeparationDeg < MOON_AVOIDANCE_SEPARATION_DEG) {
+  if (
+    options.avoidMoon &&
+    sample.moonAltitudeDeg > 0 &&
+    sample.moonSeparationDeg < moonSeparationRequiredDeg(moonFraction)
+  ) {
     return false;
   }
   return true;
+}
+
+/** How much a sample is degraded by moonlight: illumination × closeness, 0 when the Moon is down. */
+function moonPenaltyAt(sample: AltitudeSample, moonFraction: number): number {
+  if (sample.moonAltitudeDeg <= 0) return 0;
+  const closeness = Math.min(1, Math.max(0, 1 - (sample.moonSeparationDeg - 20) / 100));
+  return moonFraction * closeness;
 }
 
 function sampleAt(ctx: NightContext, dso: DSOObject, time: Date, index?: number): AltitudeSample {
@@ -184,16 +245,46 @@ function sampleAt(ctx: NightContext, dso: DSOObject, time: Date, index?: number)
   };
 }
 
-/** Bisect the instant between a non-shootable and a shootable time to ~5 s. */
-function refineEdge(ctx: NightContext, dso: DSOObject, options: PlannerOptions, outside: Date, inside: Date): Date {
+/** Indices [start, end] of the longest run of `true`, or null. */
+function longestRun(flags: boolean[]): [number, number] | null {
+  let best: [number, number] | null = null;
+  for (let i = 0; i < flags.length;) {
+    if (!flags[i]) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j + 1 < flags.length && flags[j + 1]) j++;
+    if (!best || j - i > best[1] - best[0]) best = [i, j];
+    i = j + 1;
+  }
+  return best;
+}
+
+/** Bisect the instant between a failing and a passing time to ~5 s. */
+function bisect(pass: (t: Date) => boolean, outside: Date, inside: Date): Date {
   let a = outside.getTime();
   let b = inside.getTime();
   for (let i = 0; i < 7; i++) {
     const mid = (a + b) / 2;
-    if (isShootable(sampleAt(ctx, dso, new Date(mid)), options)) b = mid;
+    if (pass(new Date(mid))) b = mid;
     else a = mid;
   }
   return new Date(b);
+}
+
+/** Refined [start, end] instants of the longest run of passing samples. */
+function refinedWindow(
+  times: Date[],
+  flags: boolean[],
+  pass: (t: Date) => boolean,
+): { start: Date | null; end: Date | null; minutes: number; run: [number, number] | null } {
+  const run = longestRun(flags);
+  if (!run) return { start: null, end: null, minutes: 0, run };
+  const [i, j] = run;
+  const start = i > 0 ? bisect(pass, times[i - 1], times[i]) : times[i];
+  const end = j < times.length - 1 ? bisect(pass, times[j + 1], times[j]) : times[j];
+  return { start, end, minutes: Math.round((end.getTime() - start.getTime()) / MINUTE_MS), run };
 }
 
 /** Upper transit (HA = 0h) nearest to the middle of the session. */
@@ -213,40 +304,10 @@ export function computeTargetReport(
   dso: DSOObject,
   options: PlannerOptions = DEFAULT_PLANNER_OPTIONS,
 ): NightWindowReport {
+  const moonFraction = ctx.moonIlluminationPct / 100;
   const samples = ctx.times.map((t, i) => sampleAt(ctx, dso, t, i));
-  const ok = samples.map((s) => isShootable(s, options));
-
-  // Longest contiguous run of shootable samples.
-  let bestStart = -1;
-  let bestEnd = -1;
-  for (let i = 0; i < ok.length;) {
-    if (!ok[i]) {
-      i++;
-      continue;
-    }
-    let j = i;
-    while (j + 1 < ok.length && ok[j + 1]) j++;
-    if (bestStart < 0 || j - i > bestEnd - bestStart) {
-      bestStart = i;
-      bestEnd = j;
-    }
-    i = j + 1;
-  }
-
-  let optimalStart: Date | null = null;
-  let optimalEnd: Date | null = null;
-  if (bestStart >= 0) {
-    optimalStart =
-      bestStart > 0
-        ? refineEdge(ctx, dso, options, ctx.times[bestStart - 1], ctx.times[bestStart])
-        : ctx.times[bestStart];
-    optimalEnd =
-      bestEnd < ok.length - 1
-        ? refineEdge(ctx, dso, options, ctx.times[bestEnd + 1], ctx.times[bestEnd])
-        : ctx.times[bestEnd];
-  }
-  const totalShootableMinutes =
-    optimalStart && optimalEnd ? Math.round((optimalEnd.getTime() - optimalStart.getTime()) / MINUTE_MS) : 0;
+  const ok = samples.map((s) => isShootable(s, options, moonFraction));
+  const window = refinedWindow(ctx.times, ok, (t) => isShootable(sampleAt(ctx, dso, t), options, moonFraction));
 
   const meridianTransitTime = meridianTransit(ctx, dso);
   const transitInSession = meridianTransitTime >= ctx.sessionStart && meridianTransitTime <= ctx.sessionEnd;
@@ -256,18 +317,21 @@ export function computeTargetReport(
     maxAltitudeDeg = Math.max(maxAltitudeDeg, targetHorizon(dso, ctx.observer, meridianTransitTime).altitude);
   }
 
-  const windowSamples =
-    optimalStart && optimalEnd ? samples.filter((s) => s.time >= optimalStart! && s.time <= optimalEnd!) : samples;
-  const minMoonSeparationDeg = Math.min(
-    ...(windowSamples.length ? windowSamples : samples).map((s) => s.moonSeparationDeg),
-  );
+  // Moon figures only describe the shooting window (or the whole night when there is none).
+  const windowSamples = window.run ? samples.slice(window.run[0], window.run[1] + 1) : samples;
+  const moonUp = windowSamples.filter((s) => s.moonAltitudeDeg > 0);
+  const minMoonSeparationDeg = moonUp.length ? Math.min(...moonUp.map((s) => s.moonSeparationDeg)) : null;
+  const moonUpMinutesInWindow = window.run ? moonUp.length * SAMPLE_STEP_MINUTES : 0;
+  const moonPenalty =
+    windowSamples.reduce((sum, s) => sum + moonPenaltyAt(s, moonFraction), 0) / Math.max(1, windowSamples.length);
+  const score = window.minutes * (1 - 0.6 * moonPenalty);
 
   const margin = FLIP_MARGIN_MINUTES * MINUTE_MS;
   const meridianFlipRequiredInWindow =
-    !!optimalStart &&
-    !!optimalEnd &&
-    meridianTransitTime.getTime() > optimalStart.getTime() + margin &&
-    meridianTransitTime.getTime() < optimalEnd.getTime() - margin;
+    !!window.start &&
+    !!window.end &&
+    meridianTransitTime.getTime() > window.start.getTime() + margin &&
+    meridianTransitTime.getTime() < window.end.getTime() - margin;
 
   return {
     dso,
@@ -282,15 +346,19 @@ export function computeTargetReport(
     maxAltitudeDeg,
     moonIlluminationPct: ctx.moonIlluminationPct,
     minMoonSeparationDeg,
-    optimalStart,
-    optimalEnd,
-    totalShootableMinutes,
+    moonUpMinutesInWindow,
+    moonPenalty,
+    score,
+    sunLimitDeg: options.sunLimitDeg ?? ASTRONOMICAL_TWILIGHT_DEG,
+    optimalStart: window.start,
+    optimalEnd: window.end,
+    totalShootableMinutes: window.minutes,
     meridianFlipRequiredInWindow,
     samples,
   };
 }
 
-/** Rank a catalog for one night: longest dark window first, then highest altitude. */
+/** Rank a catalog for one night: Moon-weighted usable time first, then highest altitude. */
 export function rankTargets(
   ctx: NightContext,
   catalog: DSOObject[],
@@ -298,5 +366,50 @@ export function rankTargets(
 ): NightWindowReport[] {
   return catalog
     .map((dso) => computeTargetReport(ctx, dso, options))
-    .sort((a, b) => b.totalShootableMinutes - a.totalShootableMinutes || b.maxAltitudeDeg - a.maxAltitudeDeg);
+    .sort((a, b) => b.score - a.score || b.maxAltitudeDeg - a.maxAltitudeDeg);
+}
+
+/** Dark window, Moon events and the Moon-free part of the night. */
+export function summarizeNight(ctx: NightContext, darkLimit: DarkLimit): NightSummary {
+  const sunAltAt = (t: Date) => bodyAltitude(Astronomy.Body.Sun, ctx.observer, t).altitude;
+  const moonAltAt = (t: Date) => bodyAltitude(Astronomy.Body.Moon, ctx.observer, t).altitude;
+  const isDark = (t: Date) => sunAltAt(t) <= darkLimit.sunLimitDeg;
+
+  const darkFlags = ctx.sunAltitudes.map((alt) => alt <= darkLimit.sunLimitDeg);
+  const dark = refinedWindow(ctx.times, darkFlags, isDark);
+  const moonFreeFlags = darkFlags.map((d, i) => d && ctx.moonAltitudes[i] <= 0);
+  const moonFree = refinedWindow(ctx.times, moonFreeFlags, (t) => isDark(t) && moonAltAt(t) <= 0);
+
+  return {
+    date: ctx.date,
+    sessionStart: ctx.sessionStart,
+    sessionEnd: ctx.sessionEnd,
+    darkLimit,
+    darkStart: dark.start,
+    darkEnd: dark.end,
+    darkMinutes: dark.minutes,
+    darkAllSession: darkFlags.every(Boolean),
+    moonIlluminationPct: ctx.moonIlluminationPct,
+    moonrise: ctx.moonrise,
+    moonset: ctx.moonset,
+    moonFreeStart: moonFree.start,
+    moonFreeEnd: moonFree.end,
+    moonFreeMinutes: moonFree.minutes,
+  };
+}
+
+/** One summary per night for `nights` evenings starting at `firstDate` (device-local dates). */
+export function darkSkyCalendar(
+  location: ObserverLocation,
+  firstDate: Date,
+  nights: number,
+  mode: DarknessMode,
+): NightSummary[] {
+  const out: NightSummary[] = [];
+  for (let n = 0; n < nights; n++) {
+    const date = new Date(firstDate.getFullYear(), firstDate.getMonth(), firstDate.getDate() + n);
+    const ctx = computeNightContext(location, date);
+    out.push(summarizeNight(ctx, resolveDarkLimit(ctx, mode)));
+  }
+  return out;
 }

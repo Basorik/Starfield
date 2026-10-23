@@ -1,17 +1,25 @@
-import { router } from 'expo-router';
-import { ChevronLeft, ChevronRight, Moon, Plus, X } from 'lucide-react-native';
+import { router, useLocalSearchParams } from 'expo-router';
+import { CalendarDays, ChevronLeft, ChevronRight, Moon, Plus, X } from 'lucide-react-native';
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import AltitudeChartSVG from '@/components/AltitudeChartSVG';
-import TargetCard from '@/components/TargetCard';
+import LocationBanner from '@/components/LocationBanner';
+import TargetCard, { describeMoon } from '@/components/TargetCard';
 import { BottomSheet, Button, Card, Chip, SectionTitle } from '@/components/ui';
 import { DSO_CATALOG, FOCAL_FILTERS, matchesFocalFilter } from '@/data/dsoCatalog';
-import { computeNightContext, rankTargets, sessionDateFor, type NightContext } from '@/engine/targetPlanner';
+import {
+  computeNightContext,
+  rankTargets,
+  resolveDarkLimit,
+  sessionDateFor,
+  summarizeNight,
+  type NightContext,
+} from '@/engine/targetPlanner';
 import { addDays, formatDay, formatDuration, formatMagnitude, formatTime, parseAngle } from '@/lib/format';
-import { useAppStore, type HorizonFloor } from '@/store/useAppStore';
-import type { DSOObject, NightWindowReport } from '@/types/astro';
+import { DARKNESS_MODES, useAppStore, type HorizonFloor } from '@/store/useAppStore';
+import type { DarknessLevel, DSOObject, NightSummary, NightWindowReport } from '@/types/astro';
 
 type DayMode = 'TONIGHT' | 'TOMORROW' | 'CUSTOM';
 
@@ -21,10 +29,36 @@ const HORIZON_FLOORS: HorizonFloor[] = [20, 30, 40];
 
 const openPaywall = () => router.push('/paywall');
 
+const DARK_NAME: Record<DarknessLevel, string> = {
+  ASTRONOMICAL: 'astronomical darkness',
+  NAUTICAL: 'nautical darkness',
+  CIVIL: 'civil twilight',
+};
+
+/** "2026-11-14" → device-local midnight, or null. */
+function parseDateParam(value: string | undefined): Date | null {
+  const m = value?.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+}
+
+function moonEventsText(ctx: NightContext): string {
+  const events = [
+    ctx.moonrise && { t: ctx.moonrise, text: `rises ${formatTime(ctx.moonrise)}` },
+    ctx.moonset && { t: ctx.moonset, text: `sets ${formatTime(ctx.moonset)}` },
+  ]
+    .filter((e): e is { t: Date; text: string } => !!e)
+    .sort((a, b) => a.t.getTime() - b.t.getTime())
+    .map((e) => e.text);
+  if (events.length) return events.join(' · ');
+  return ctx.moonAltitudes.every((a) => a > 0) ? 'up all night' : 'below the horizon all night';
+}
+
 export default function PlannerScreen() {
   const store = useAppStore();
-  const { palette, location, isPro, minHorizonDeg, avoidMoon, focalFilter, customTargets, update } = store;
+  const { palette, location, isPro, minHorizonDeg, avoidMoon, darknessMode, focalFilter, customTargets, update } =
+    store;
   const insets = useSafeAreaInsets();
+  const params = useLocalSearchParams<{ date?: string }>();
 
   const [dayMode, setDayMode] = useState<DayMode>('TONIGHT');
   const tonight = sessionDateFor(new Date(), location.longitude);
@@ -32,7 +66,20 @@ export default function PlannerScreen() {
   const sessionDate = dayMode === 'TONIGHT' ? tonight : dayMode === 'TOMORROW' ? addDays(tonight, 1) : customDate;
   const sessionKey = sessionDate.getTime();
 
-  const [plan, setPlan] = useState<{ ctx: NightContext; ranked: NightWindowReport[] } | null>(null);
+  // A night picked in the dark-sky calendar arrives as ?date=YYYY-MM-DD.
+  useEffect(() => {
+    const picked = parseDateParam(params.date);
+    if (picked && isPro) {
+      setCustomDate(picked);
+      setDayMode('CUSTOM');
+    }
+  }, [params.date, isPro]);
+
+  const [plan, setPlan] = useState<{
+    ctx: NightContext;
+    summary: NightSummary;
+    ranked: NightWindowReport[];
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<NightWindowReport | null>(null);
   const [showBelowFloor, setShowBelowFloor] = useState(false);
@@ -45,11 +92,16 @@ export default function PlannerScreen() {
     setLoading(true);
     const id = setTimeout(() => {
       const ctx = computeNightContext(location, new Date(sessionKey));
-      setPlan({ ctx, ranked: rankTargets(ctx, catalog, { minHorizonDeg, avoidMoon }) });
+      const darkLimit = resolveDarkLimit(ctx, darknessMode);
+      setPlan({
+        ctx,
+        summary: summarizeNight(ctx, darkLimit),
+        ranked: rankTargets(ctx, catalog, { minHorizonDeg, avoidMoon, sunLimitDeg: darkLimit.sunLimitDeg }),
+      });
       setLoading(false);
     }, 16);
     return () => clearTimeout(id);
-  }, [location, sessionKey, catalog, minHorizonDeg, avoidMoon]);
+  }, [location, sessionKey, catalog, minHorizonDeg, avoidMoon, darknessMode]);
 
   const activeFilter = isPro ? focalFilter : 'ALL';
   const filtered = useMemo(
@@ -66,15 +118,17 @@ export default function PlannerScreen() {
     setDayMode(mode);
   };
 
-  const twilight = plan?.ctx.twilight;
+  const summary = plan?.summary;
+  const lowestSun = plan ? Math.min(...plan.ctx.sunAltitudes) : 0;
 
   return (
     <View className="flex-1 bg-bg">
       <ScrollView contentContainerStyle={{ paddingTop: insets.top + 8, paddingBottom: 32, paddingHorizontal: 16 }}>
         <Text className="text-2xl font-bold text-primary">Target Window</Text>
-        <Text className="text-xs text-secondary">
+        <Text className="mb-3 text-xs text-secondary">
           {location.label ?? 'Manual location'} · times in device time zone
         </Text>
+        <LocationBanner />
 
         {/* Date */}
         <SectionTitle>Session</SectionTitle>
@@ -94,6 +148,14 @@ export default function PlannerScreen() {
             locked={!isPro}
             onPress={() => chooseDay('CUSTOM')}
           />
+          <Pressable
+            onPress={() => (isPro ? router.push('/calendar') : openPaywall())}
+            accessibilityRole="button"
+            className="flex-row items-center rounded-full border border-border px-3 py-1.5"
+          >
+            <CalendarDays size={12} color={palette.primary} />
+            <Text className="ml-1 text-xs text-primary">Dark-sky calendar{isPro ? '' : ' · PRO'}</Text>
+          </Pressable>
         </View>
         {dayMode === 'CUSTOM' && (
           <View className="mt-3 flex-row items-center justify-between rounded-lg border border-border px-2 py-1">
@@ -147,24 +209,53 @@ export default function PlannerScreen() {
           />
         </View>
 
+        <SectionTitle>Darkness</SectionTitle>
+        <View className="flex-row flex-wrap gap-2">
+          {DARKNESS_MODES.map((m) => (
+            <Chip
+              key={m.key}
+              label={m.label}
+              active={darknessMode === m.key}
+              palette={palette}
+              onPress={() => update({ darknessMode: m.key })}
+            />
+          ))}
+        </View>
+
         {/* Night summary */}
         <Card className="mt-5">
           <Text className="text-xs uppercase tracking-widest text-secondary">
-            {formatDay(sessionDate)} · dark window
+            {formatDay(sessionDate)} · {summary ? DARK_NAME[summary.darkLimit.level] : 'dark window'}
           </Text>
-          {twilight ? (
+          {plan && summary ? (
             <>
               <Text className="mt-1 font-mono text-lg font-bold text-primary">
-                {twilight.astronomicalDusk && twilight.astronomicalDawn
-                  ? `${formatTime(twilight.astronomicalDusk)} – ${formatTime(twilight.astronomicalDawn)}`
-                  : 'No astronomical darkness'}
+                {summary.darkAllSession
+                  ? 'Dark all night'
+                  : summary.darkStart
+                    ? `${formatTime(summary.darkStart)} – ${formatTime(summary.darkEnd)} (${formatDuration(summary.darkMinutes)})`
+                    : `No ${DARK_NAME[summary.darkLimit.level]} tonight`}
               </Text>
-              <View className="mt-1 flex-row items-center">
+              {summary.darkLimit.isFallback && (
+                <Text className="mt-1 text-xs text-warn">
+                  The Sun only gets to {lowestSun.toFixed(0)}° tonight, so there is no astronomical darkness. Planning
+                  for {DARK_NAME[summary.darkLimit.level]} instead — expect a brighter sky; favour bright targets and
+                  narrowband filters.
+                </Text>
+              )}
+              <View className="mt-2 flex-row items-center">
                 <Moon size={12} color={palette.secondary} />
-                <Text className="ml-1.5 text-xs text-secondary">
-                  Moon {plan!.ctx.moonIlluminationPct.toFixed(0)}% illuminated
+                <Text className="ml-1.5 flex-1 text-xs text-secondary">
+                  Moon {summary.moonIlluminationPct.toFixed(0)}% · {moonEventsText(plan.ctx)}
                 </Text>
               </View>
+              <Text className="mt-1 text-xs text-primary">
+                {summary.moonFreeStart
+                  ? `Moon-free dark: ${formatTime(summary.moonFreeStart)} – ${formatTime(summary.moonFreeEnd)} (${formatDuration(summary.moonFreeMinutes)})`
+                  : summary.darkMinutes > 0
+                    ? 'No Moon-free darkness tonight'
+                    : ''}
+              </Text>
             </>
           ) : (
             <Text className="mt-1 text-sm text-secondary">Computing…</Text>
@@ -189,7 +280,8 @@ export default function PlannerScreen() {
 
         {!loading && shootable.length === 0 && (
           <Text className="my-4 text-sm text-secondary">
-            Nothing clears {minHorizonDeg}° during astronomical darkness with these filters.
+            Nothing clears {minHorizonDeg}° during {summary ? DARK_NAME[summary.darkLimit.level] : 'darkness'} with
+            these filters.
           </Text>
         )}
 
@@ -261,7 +353,8 @@ function TargetDetail({ report, onClose }: { report: NightWindowReport | null; o
     ['Meridian transit', `${formatTime(report.meridianTransitTime)}${report.transitInSession ? '' : ' (daytime)'}`],
     ['Max altitude', `${report.maxAltitudeDeg.toFixed(1)}°`],
     ['Astro dusk / dawn', `${formatTime(report.astronomicalDusk)} / ${formatTime(report.astronomicalDawn)}`],
-    ['Moon', `${report.moonIlluminationPct.toFixed(0)}% lit · ≥${report.minMoonSeparationDeg.toFixed(0)}° away`],
+    ['Darkness limit', `Sun ≤ ${report.sunLimitDeg}°`],
+    ['Moon', describeMoon(report).replace(/^Moon /, '')],
     ['RA / Dec (J2000)', `${dso.raHours.toFixed(3)}h / ${dso.decDeg.toFixed(2)}°`],
     ['Size / Mag', `${dso.sizeArcmin}′ / ${formatMagnitude(dso.magnitude)}`],
   ];

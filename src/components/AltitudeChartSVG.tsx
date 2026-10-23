@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { Text, View, type GestureResponderEvent } from 'react-native';
+import { useMemo, useRef, useState } from 'react';
+import { Pressable, Text, View, type GestureResponderEvent } from 'react-native';
 import Svg, { G, Line, Polyline, Rect, Text as SvgText } from 'react-native-svg';
 
 import { formatTime } from '@/lib/format';
@@ -18,6 +18,8 @@ interface Props {
 }
 
 const PAD = { left: 30, right: 10, top: 10, bottom: 22 };
+/** A touch that travels further than this is a scroll, not a tap. */
+const TAP_SLOP_PX = 10;
 const Y_MIN = -10;
 const Y_MAX = 90;
 
@@ -42,6 +44,7 @@ export default function AltitudeChartSVG({
   onLockedPress,
 }: Props) {
   const [cursor, setCursor] = useState<number | null>(null);
+  const pressStart = useRef<{ x: number; y: number } | null>(null);
   const { samples, sessionStart, sessionEnd } = report;
   const t0 = sessionStart.getTime();
   const span = sessionEnd.getTime() - t0;
@@ -83,133 +86,149 @@ export default function AltitudeChartSVG({
 
   return (
     <View>
-      <View
-        onStartShouldSetResponder={() => true}
-        onMoveShouldSetResponder={() => interactive}
-        onResponderGrant={(e) => (interactive ? handleTouch(e) : onLockedPress?.())}
-        onResponderMove={(e) => interactive && handleTouch(e)}
+      {/* Pro: drag to scrub. Free: a tap (never a scroll that starts here) opens the paywall. */}
+      <Pressable
+        disabled={interactive}
+        onPressIn={(e) => {
+          pressStart.current = { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY };
+        }}
+        onPress={(e) => {
+          const start = pressStart.current;
+          const moved = start ? Math.hypot(e.nativeEvent.pageX - start.x, e.nativeEvent.pageY - start.y) : 0;
+          if (moved <= TAP_SLOP_PX) onLockedPress?.();
+        }}
+        accessibilityRole={interactive ? 'adjustable' : 'button'}
+        accessibilityLabel="Altitude chart"
       >
-        <Svg width={width} height={height}>
-          {bands.map((b, i) =>
-            BAND_OPACITY[b.band] > 0 ? (
+        <View
+          onStartShouldSetResponder={() => interactive}
+          onMoveShouldSetResponder={() => interactive}
+          onResponderTerminationRequest={() => false}
+          onResponderGrant={handleTouch}
+          onResponderMove={handleTouch}
+        >
+          <Svg width={width} height={height}>
+            {bands.map((b, i) =>
+              BAND_OPACITY[b.band] > 0 ? (
+                <Rect
+                  key={i}
+                  x={x(b.from)}
+                  y={PAD.top}
+                  width={Math.max(0, x(b.to) - x(b.from))}
+                  height={plotH}
+                  fill={palette.secondary}
+                  opacity={BAND_OPACITY[b.band]}
+                />
+              ) : null,
+            )}
+
+            {report.optimalStart && report.optimalEnd && (
               <Rect
-                key={i}
-                x={x(b.from)}
-                y={PAD.top}
-                width={Math.max(0, x(b.to) - x(b.from))}
-                height={plotH}
-                fill={palette.secondary}
-                opacity={BAND_OPACITY[b.band]}
+                x={x(report.optimalStart)}
+                y={y(Y_MAX)}
+                width={Math.max(1, x(report.optimalEnd) - x(report.optimalStart))}
+                height={y(minHorizonDeg) - y(Y_MAX)}
+                fill={palette.accent}
+                opacity={0.16}
+                stroke={palette.accent}
+                strokeWidth={1}
+                strokeOpacity={0.6}
               />
-            ) : null,
-          )}
+            )}
 
-          {report.optimalStart && report.optimalEnd && (
-            <Rect
-              x={x(report.optimalStart)}
-              y={y(Y_MAX)}
-              width={Math.max(1, x(report.optimalEnd) - x(report.optimalStart))}
-              height={y(minHorizonDeg) - y(Y_MAX)}
-              fill={palette.accent}
-              opacity={0.16}
-              stroke={palette.accent}
-              strokeWidth={1}
-              strokeOpacity={0.6}
-            />
-          )}
-
-          {/* Altitude grid */}
-          {[0, 30, 60, 90].map((alt) => (
-            <G key={alt}>
-              <Line
-                x1={PAD.left}
-                x2={width - PAD.right}
-                y1={y(alt)}
-                y2={y(alt)}
-                stroke={palette.border}
-                strokeWidth={alt === 0 ? 1.5 : 1}
-              />
-              <SvgText x={PAD.left - 4} y={y(alt) + 3} fill={palette.secondary} fontSize={9} textAnchor="end">
-                {`${alt}°`}
-              </SvgText>
-            </G>
-          ))}
-
-          {hourTicks.map((t, i) => (
-            <G key={t.getTime()}>
-              <Line x1={x(t)} x2={x(t)} y1={PAD.top + plotH} y2={PAD.top + plotH + 4} stroke={palette.secondary} />
-              {i % 2 === 0 && (
-                <SvgText x={x(t)} y={height - 6} fill={palette.secondary} fontSize={9} textAnchor="middle">
-                  {formatTime(t)}
+            {/* Altitude grid */}
+            {[0, 30, 60, 90].map((alt) => (
+              <G key={alt}>
+                <Line
+                  x1={PAD.left}
+                  x2={width - PAD.right}
+                  y1={y(alt)}
+                  y2={y(alt)}
+                  stroke={palette.border}
+                  strokeWidth={alt === 0 ? 1.5 : 1}
+                />
+                <SvgText x={PAD.left - 4} y={y(alt) + 3} fill={palette.secondary} fontSize={9} textAnchor="end">
+                  {`${alt}°`}
                 </SvgText>
-              )}
-            </G>
-          ))}
+              </G>
+            ))}
 
-          <Line
-            x1={PAD.left}
-            x2={width - PAD.right}
-            y1={y(minHorizonDeg)}
-            y2={y(minHorizonDeg)}
-            stroke={palette.secondary}
-            strokeWidth={1}
-            strokeDasharray="6 4"
-          />
+            {hourTicks.map((t, i) => (
+              <G key={t.getTime()}>
+                <Line x1={x(t)} x2={x(t)} y1={PAD.top + plotH} y2={PAD.top + plotH + 4} stroke={palette.secondary} />
+                {i % 2 === 0 && (
+                  <SvgText x={x(t)} y={height - 6} fill={palette.secondary} fontSize={9} textAnchor="middle">
+                    {formatTime(t)}
+                  </SvgText>
+                )}
+              </G>
+            ))}
 
-          {report.transitInSession && (
-            <G>
-              <Line
-                x1={x(report.meridianTransitTime)}
-                x2={x(report.meridianTransitTime)}
-                y1={PAD.top}
-                y2={PAD.top + plotH}
-                stroke={palette.warn}
-                strokeWidth={1}
-                strokeDasharray="2 3"
-              />
-              <SvgText x={x(report.meridianTransitTime) + 3} y={PAD.top + 9} fill={palette.warn} fontSize={9}>
-                HA 0h
-              </SvgText>
-            </G>
-          )}
+            <Line
+              x1={PAD.left}
+              x2={width - PAD.right}
+              y1={y(minHorizonDeg)}
+              y2={y(minHorizonDeg)}
+              stroke={palette.secondary}
+              strokeWidth={1}
+              strokeDasharray="6 4"
+            />
 
-          <Polyline
-            points={moonPoints}
-            fill="none"
-            stroke={palette.secondary}
-            strokeWidth={1.5}
-            strokeDasharray="1 4"
-            strokeLinecap="round"
-          />
-          <Polyline
-            points={targetPoints}
-            fill="none"
-            stroke={palette.primary}
-            strokeWidth={2.5}
-            strokeLinejoin="round"
-          />
+            {report.transitInSession && (
+              <G>
+                <Line
+                  x1={x(report.meridianTransitTime)}
+                  x2={x(report.meridianTransitTime)}
+                  y1={PAD.top}
+                  y2={PAD.top + plotH}
+                  stroke={palette.warn}
+                  strokeWidth={1}
+                  strokeDasharray="2 3"
+                />
+                <SvgText x={x(report.meridianTransitTime) + 3} y={PAD.top + 9} fill={palette.warn} fontSize={9}>
+                  HA 0h
+                </SvgText>
+              </G>
+            )}
 
-          {cursorSample && (
-            <G>
-              <Line
-                x1={x(cursorSample.time)}
-                x2={x(cursorSample.time)}
-                y1={PAD.top}
-                y2={PAD.top + plotH}
-                stroke={palette.primary}
-                strokeWidth={1}
-              />
-              <Rect
-                x={x(cursorSample.time) - 4}
-                y={y(cursorSample.targetAltitudeDeg) - 4}
-                width={8}
-                height={8}
-                fill={palette.primary}
-              />
-            </G>
-          )}
-        </Svg>
-      </View>
+            <Polyline
+              points={moonPoints}
+              fill="none"
+              stroke={palette.secondary}
+              strokeWidth={1.5}
+              strokeDasharray="1 4"
+              strokeLinecap="round"
+            />
+            <Polyline
+              points={targetPoints}
+              fill="none"
+              stroke={palette.primary}
+              strokeWidth={2.5}
+              strokeLinejoin="round"
+            />
+
+            {cursorSample && (
+              <G>
+                <Line
+                  x1={x(cursorSample.time)}
+                  x2={x(cursorSample.time)}
+                  y1={PAD.top}
+                  y2={PAD.top + plotH}
+                  stroke={palette.primary}
+                  strokeWidth={1}
+                />
+                <Rect
+                  x={x(cursorSample.time) - 4}
+                  y={y(cursorSample.targetAltitudeDeg) - 4}
+                  width={8}
+                  height={8}
+                  fill={palette.primary}
+                />
+              </G>
+            )}
+          </Svg>
+        </View>
+      </Pressable>
 
       <View className="mt-2 min-h-[36px] flex-row flex-wrap gap-x-4 gap-y-1">
         {cursorSample ? (

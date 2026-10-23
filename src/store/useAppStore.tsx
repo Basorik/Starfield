@@ -5,7 +5,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { FocalFilter } from '@/data/dsoCatalog';
 import { cachePro, initBilling, loadCachedPro } from '@/lib/billing';
 import { paletteFor, type Palette } from '@/theme/palette';
-import type { DSOObject, ObserverLocation, ReticleType } from '@/types/astro';
+import type { DarknessMode, DSOObject, ObserverLocation, ReticleType } from '@/types/astro';
 
 const SETTINGS_KEY = '@polargrid_settings_v1';
 
@@ -19,6 +19,21 @@ export const RIG_PRESETS: { key: RigPreset; label: string; northReticle: Reticle
 ];
 
 export type HorizonFloor = 20 | 30 | 40;
+
+export const DIM_LEVELS: { label: string; value: number }[] = [
+  { label: 'Min', value: 0.01 },
+  { label: 'Low', value: 0.08 },
+  { label: 'Medium', value: 0.2 },
+];
+
+export const DARKNESS_MODES: { key: DarknessMode; label: string }[] = [
+  { key: 'AUTO', label: 'Auto' },
+  { key: 'ASTRONOMICAL', label: 'Astro −18°' },
+  { key: 'NAUTICAL', label: 'Nautical −12°' },
+];
+
+/** Where the active location came from: drives the "default location" warning. */
+export type LocationSource = 'manual' | 'gps' | 'lastGps' | 'fallback';
 
 /** Used until GPS or a manual location is available: Siding Spring Observatory. */
 export const FALLBACK_LOCATION: ObserverLocation = {
@@ -35,6 +50,9 @@ export interface Settings {
   rigPreset: RigPreset;
   minHorizonDeg: HorizonFloor;
   avoidMoon: boolean;
+  darknessMode: DarknessMode;
+  dimScreen: boolean;
+  dimLevel: number;
   focalFilter: FocalFilter;
   manualLocation: ObserverLocation | null;
   lastGpsLocation: ObserverLocation | null;
@@ -48,6 +66,9 @@ const DEFAULT_SETTINGS: Settings = {
   rigPreset: 'SA2I',
   minHorizonDeg: 30,
   avoidMoon: false,
+  darknessMode: 'AUTO',
+  dimScreen: true,
+  dimLevel: 0.08,
   focalFilter: 'ALL',
   manualLocation: null,
   lastGpsLocation: null,
@@ -62,6 +83,7 @@ interface AppStore extends Settings {
   isPro: boolean;
   gpsStatus: GpsStatus;
   location: ObserverLocation;
+  locationSource: LocationSource;
   palette: Palette;
   reticleType: ReticleType;
   update: (patch: Partial<Settings>) => void;
@@ -150,6 +172,13 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<AppStore>(() => {
     const location = settings.manualLocation ?? settings.lastGpsLocation ?? FALLBACK_LOCATION;
+    const locationSource: LocationSource = settings.manualLocation
+      ? 'manual'
+      : settings.lastGpsLocation
+        ? gpsStatus === 'ok'
+          ? 'gps'
+          : 'lastGps'
+        : 'fallback';
     const rig = RIG_PRESETS.find((r) => r.key === settings.rigPreset) ?? RIG_PRESETS[0];
     return {
       ...settings,
@@ -157,6 +186,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       isPro,
       gpsStatus,
       location,
+      locationSource,
       palette: paletteFor(settings.isNightVisionMode),
       reticleType: location.latitude < 0 ? 'OCTANS_TRAPEZOID' : rig.northReticle,
       update,
