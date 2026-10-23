@@ -1,6 +1,6 @@
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
-import { DeviceMotion } from 'expo-sensors';
+import { Accelerometer } from 'expo-sensors';
 import { useEffect, useRef, useState } from 'react';
 import { Platform, Text, View } from 'react-native';
 
@@ -50,13 +50,22 @@ function useOrientation(active: boolean) {
       } catch {
         if (!cancelled) setUnavailable('No compass on this device.');
       }
-      if (await DeviceMotion.isAvailableAsync().catch(() => false)) {
-        DeviceMotion.setUpdateInterval(100);
-        motionSub = DeviceMotion.addListener(({ accelerationIncludingGravity: g }) => {
+      // Read the accelerometer directly: Android DeviceMotion events omit
+      // accelerationIncludingGravity until the first accelerometer sample arrives.
+      if (await Accelerometer.isAvailableAsync().catch(() => false)) {
+        Accelerometer.setUpdateInterval(100);
+        let smoothed: number | null = null;
+        motionSub = Accelerometer.addListener((g) => {
+          if (!g || !Number.isFinite(g.x) || !Number.isFinite(g.y) || !Number.isFinite(g.z)) return;
           const norm = Math.hypot(g.x, g.y, g.z);
+          if (norm < 0.1) return;
           // Elevation of the phone's long axis above the horizon (sign-agnostic across platforms).
-          if (norm > 0) setTiltDeg((Math.asin(Math.min(1, Math.abs(g.y) / norm)) * 180) / Math.PI);
+          const tilt = (Math.asin(Math.min(1, Math.abs(g.y) / norm)) * 180) / Math.PI;
+          smoothed = smoothed === null ? tilt : smoothed + 0.25 * (tilt - smoothed);
+          setTiltDeg(smoothed);
         });
+      } else if (!cancelled) {
+        setUnavailable('No accelerometer available for the tilt reading.');
       }
       if (cancelled) {
         headingSub?.remove();
