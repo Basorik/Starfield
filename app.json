@@ -43,6 +43,12 @@
           "locationWhenInUsePermission": "PolarGrid uses your GPS position to compute sidereal time, the pole star position and target altitudes. Works offline."
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "c2b9806f-ef76-49f2-903e-fe622a338258"
+      }
+    },
+    "owner": "basorik"
   }
 }
