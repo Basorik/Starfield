@@ -13,8 +13,9 @@ import ReticleSVG from '@/components/ReticleSVG';
 import RoughAlignPanel from '@/components/RoughAlignPanel';
 import { Card, Chip } from '@/components/ui';
 import { computePolarAlignment, formatSiderealTime } from '@/engine/polarAlignment';
-import { computePoleFinder } from '@/engine/poleFinder';
+import { computePoleFinder, headingError, horizontalToFinder, polarAxisTarget } from '@/engine/poleFinder';
 import { formatLatLon, formatSignedHours, formatTime } from '@/lib/format';
+import { useCameraPointing } from '@/lib/useCameraPointing';
 import { useDimScreen } from '@/lib/useDimScreen';
 import { RIG_PRESETS, useAppStore } from '@/store/useAppStore';
 
@@ -41,6 +42,8 @@ const FINDER_HELP = {
 export default function PolarScopeScreen() {
   const { palette, location, invertScope, reticleType, rigPreset, isPro, dimScreen, dimLevel, update } = useAppStore();
   const [mode, setMode] = useState<ViewMode>('RETICLE');
+  const [liveAim, setLiveAim] = useState(true);
+  const { pointing, unavailable: aimUnavailable } = useCameraPointing(mode === 'FINDER' && liveAim);
   useDimScreen(dimScreen, dimLevel);
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
@@ -71,6 +74,15 @@ export default function PolarScopeScreen() {
     () => (mode === 'FINDER' ? computePoleFinder(location, viewTime) : null),
     [mode, location, viewTime],
   );
+
+  const aim =
+    finder && pointing
+      ? horizontalToFinder(pointing.azimuthDeg, pointing.altitudeDeg, location.latitude, finder.radiusDeg)
+      : null;
+  const poleTarget = polarAxisTarget(location.latitude);
+  const aimTurn = pointing ? headingError(pointing.azimuthDeg, poleTarget.headingDeg) : 0;
+  const aimRaise = pointing ? poleTarget.altitudeDeg - pointing.altitudeDeg : 0;
+  const onPole = pointing !== null && Math.abs(aimTurn) <= 2 && Math.abs(aimRaise) <= 2;
 
   const reticleSize = Math.min(width - 32, height * 0.48, 440);
   const isNorth = state.hemisphere === 'NORTH';
@@ -144,7 +156,7 @@ export default function PolarScopeScreen() {
       {mode === 'FINDER' && finder && (
         <>
           <View className="mt-4 items-center">
-            <PoleFinderSVG finder={finder} palette={palette} size={reticleSize} />
+            <PoleFinderSVG finder={finder} palette={palette} size={reticleSize} aim={liveAim ? aim : null} />
           </View>
           <Card className="mt-3">
             <Text className="text-xs uppercase tracking-widest text-secondary">
@@ -153,6 +165,42 @@ export default function PolarScopeScreen() {
             <Text className="mt-1 text-sm text-primary">{FINDER_HELP[finder.hemisphere]}</Text>
             <Text className="mt-2 text-xs text-secondary">
               Pole altitude {finder.poleAltitudeDeg.toFixed(1)}° · stars below your horizon are dimmed · rings every 10°
+            </Text>
+          </Card>
+          <Card className="mt-3">
+            <View className="flex-row items-center">
+              <Text className="flex-1 text-xs uppercase tracking-widest text-secondary">Live aim</Text>
+              <Chip
+                label={liveAim ? 'On' : 'Off'}
+                active={liveAim}
+                palette={palette}
+                onPress={() => setLiveAim(!liveAim)}
+              />
+            </View>
+            {liveAim && aimUnavailable && <Text className="mt-2 text-sm text-warn">{aimUnavailable}</Text>}
+            {liveAim && !aimUnavailable && !pointing && (
+              <Text className="mt-2 text-sm text-secondary">Waiting for the compass and tilt sensors…</Text>
+            )}
+            {liveAim && pointing && (
+              <>
+                <Text className={`mt-2 text-lg font-bold ${onPole ? 'text-accent' : 'text-primary'}`}>
+                  {onPole
+                    ? 'On the pole — look here'
+                    : [
+                        Math.abs(aimTurn) > 2 && `${aimTurn > 0 ? 'Right' : 'Left'} ${Math.abs(aimTurn).toFixed(0)}°`,
+                        Math.abs(aimRaise) > 2 && `${aimRaise > 0 ? 'up' : 'down'} ${Math.abs(aimRaise).toFixed(0)}°`,
+                      ]
+                        .filter(Boolean)
+                        .join(', ')}
+                </Text>
+                <Text className="mt-1 font-mono text-xs text-secondary">
+                  Phone az {pointing.azimuthDeg.toFixed(0)}° · alt {pointing.altitudeDeg.toFixed(0)}°
+                  {pointing.hasDeclination ? ' (true north)' : ' (magnetic — no declination)'}
+                </Text>
+              </>
+            )}
+            <Text className="mt-2 text-xs text-secondary">
+              Hold the phone up with the screen facing you and the back camera towards the sky. Stay clear of metal.
             </Text>
           </Card>
         </>
@@ -180,6 +228,10 @@ export default function PolarScopeScreen() {
               {!isNorth && ` · trapezoid ${state.octansRotationDeg.toFixed(0)}°`}
             </Text>
             <Text className="mt-1 text-xs text-secondary">{rigLabel}</Text>
+            <Text className="mt-1 text-xs text-secondary">
+              The dial turns with the sky (15° an hour), not with the phone — it matches the etching in your polar
+              scope.
+            </Text>
           </Card>
 
           {/* Optics */}
