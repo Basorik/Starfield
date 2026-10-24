@@ -1,58 +1,57 @@
 import * as Location from 'expo-location';
-import { Accelerometer, Magnetometer } from 'expo-sensors';
+import { Accelerometer, Gyroscope, Magnetometer } from 'expo-sensors';
 import { useEffect, useState } from 'react';
 import { Platform } from 'react-native';
 
 import { mod } from '@/engine/coords';
+import { OrientationFilter, orientationDelta } from '@/engine/orientationFilter';
 import type { Vec3 } from '@/engine/poleFinder';
 import { deviceBasis, type Mat3 } from '@/engine/skyView';
 
-const UPDATE_MS = 66; // ~15 Hz
-const SMOOTHING = 0.25; // low-pass weight of each new sample
+const SENSOR_MS = 20; // 50 Hz in
+const MIN_FRAME_MS = 33; // ≤ 30 renders a second out
+const MIN_CHANGE = 0.0009; // ~0.05°: below this the view does not re-render
+
+interface Reading extends Vec3 {
+  timestamp: number;
+}
 
 const finite = (v: Vec3 | undefined | null): v is Vec3 =>
   !!v && Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z);
 
-const blend = (prev: Vec3 | null, next: Vec3): Vec3 =>
-  prev
-    ? {
-        x: prev.x + SMOOTHING * (next.x - prev.x),
-        y: prev.y + SMOOTHING * (next.y - prev.y),
-        z: prev.z + SMOOTHING * (next.z - prev.z),
-      }
-    : next;
-
 /**
- * The phone's orientation as a true-north ENU → device matrix, from the
- * accelerometer and magnetometer. Magnetic declination comes from the OS
- * compass (trueHeading − magHeading), which applies its own geomagnetic model
- * offline; without it the basis is referenced to magnetic north.
+ * The phone's orientation as a true-north ENU → device matrix (rows are the
+ * device x, y, z axes; the back camera looks along −z, the top edge is +y).
+ *
+ * Gyroscope + accelerometer + magnetometer are fused by OrientationFilter so
+ * motion is smooth and immediate while the compass keeps north honest.
+ * Magnetic declination comes from the OS compass (trueHeading − magHeading).
  */
 export function useDeviceOrientation(active: boolean) {
   const [basis, setBasis] = useState<Mat3 | null>(null);
   const [hasDeclination, setHasDeclination] = useState(false);
+  const [compassAccuracy, setCompassAccuracy] = useState<number | null>(null);
   const [unavailable, setUnavailable] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!active) {
-      setBasis(null);
-      return;
-    }
+    if (!active) return;
     if (Platform.OS === 'web') {
       setUnavailable('Motion sensors need the iOS or Android app.');
       return;
     }
 
     let cancelled = false;
+    const filter = new OrientationFilter();
     let up: Vec3 | null = null;
     let field: Vec3 | null = null;
     let declination: number | null = null;
     const subs: { remove: () => void }[] = [];
 
     (async () => {
-      const [hasAccel, hasMag] = await Promise.all([
+      const [hasAccel, hasMag, hasGyro] = await Promise.all([
         Accelerometer.isAvailableAsync().catch(() => false),
         Magnetometer.isAvailableAsync().catch(() => false),
+        Gyroscope.isAvailableAsync().catch(() => false),
       ]);
       if (cancelled) return;
       if (!hasAccel || !hasMag) {
@@ -60,18 +59,30 @@ export function useDeviceOrientation(active: boolean) {
         return;
       }
 
-      Accelerometer.setUpdateInterval(UPDATE_MS);
-      Magnetometer.setUpdateInterval(UPDATE_MS);
+      Accelerometer.setUpdateInterval(SENSOR_MS);
+      Magnetometer.setUpdateInterval(SENSOR_MS);
       // iOS reports the direction of gravity; Android reports the upward reaction to it.
       const sign = Platform.OS === 'ios' ? -1 : 1;
       subs.push(
-        Accelerometer.addListener((a) => {
-          if (finite(a)) up = blend(up, { x: sign * a.x, y: sign * a.y, z: sign * a.z });
+        Accelerometer.addListener((a: Reading) => {
+          if (!finite(a)) return;
+          up = { x: sign * a.x, y: sign * a.y, z: sign * a.z };
+          if (!field) return;
+          const measured = deviceBasis(up, field, declination ?? 0);
+          if (measured) filter.measurement(measured, a.timestamp);
         }),
-        Magnetometer.addListener((m) => {
-          if (finite(m) && Math.hypot(m.x, m.y, m.z) > 1) field = blend(field, m);
+        Magnetometer.addListener((m: Reading) => {
+          if (finite(m) && Math.hypot(m.x, m.y, m.z) > 1) field = m;
         }),
       );
+      if (hasGyro) {
+        Gyroscope.setUpdateInterval(SENSOR_MS);
+        subs.push(
+          Gyroscope.addListener((g: Reading) => {
+            if (finite(g)) filter.gyro(g, g.timestamp);
+          }),
+        );
+      }
 
       try {
         const { status } = await Location.getForegroundPermissionsAsync();
@@ -80,6 +91,7 @@ export function useDeviceOrientation(active: boolean) {
             if (h.trueHeading >= 0 && h.magHeading >= 0) {
               declination = mod(h.trueHeading - h.magHeading + 180, 360) - 180;
             }
+            setCompassAccuracy(h.accuracy);
           });
           if (cancelled) headingSub.remove();
           else subs.push(headingSub);
@@ -89,20 +101,28 @@ export function useDeviceOrientation(active: boolean) {
       }
     })();
 
-    const timer = setInterval(() => {
-      if (!up || !field) return;
-      const next = deviceBasis(up, field, declination ?? 0);
-      if (!next) return;
-      setBasis(next);
+    // Publish at display rate, and only when the orientation actually changed.
+    let published: Mat3 | null = null;
+    let lastFrame = 0;
+    let raf = 0;
+    const tick = (now: number) => {
+      raf = requestAnimationFrame(tick);
+      const b = filter.basis;
+      if (!b || now - lastFrame < MIN_FRAME_MS) return;
+      if (published && orientationDelta(published, b) < MIN_CHANGE) return;
+      published = b;
+      lastFrame = now;
+      setBasis(b);
       setHasDeclination(declination !== null);
-    }, UPDATE_MS);
+    };
+    raf = requestAnimationFrame(tick);
 
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      cancelAnimationFrame(raf);
       subs.forEach((s) => s.remove());
     };
   }, [active]);
 
-  return { basis, hasDeclination, unavailable };
+  return { basis, hasDeclination, compassAccuracy, unavailable };
 }

@@ -2,7 +2,7 @@ import * as Haptics from 'expo-haptics';
 import { Crosshair, Minus, Plus, Search, Snowflake } from 'lucide-react-native';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Platform, Pressable, ScrollView, Text, TextInput, View, type GestureResponderEvent } from 'react-native';
-import Svg, { Circle, G, Line, Polygon, Polyline, Text as SvgText } from 'react-native-svg';
+import Svg, { Circle, G, Line, Path, Polygon, Polyline, Text as SvgText } from 'react-native-svg';
 
 import { BottomSheet } from '@/components/ui';
 import {
@@ -53,8 +53,8 @@ const KIND_TITLE: Record<SkyObjectKind, string> = {
 function limitsFor(fov: number) {
   if (fov <= 30) return { stars: 5.8, names: 3.5, desig: 4.8, maxLabels: 60 };
   if (fov <= 50) return { stars: 5.0, names: 3.0, desig: 3.8, maxLabels: 55 };
-  if (fov <= 75) return { stars: 4.5, names: 2.5, desig: 0, maxLabels: 50 };
-  return { stars: 4.0, names: 1.8, desig: 0, maxLabels: 40 };
+  if (fov <= 75) return { stars: 4.3, names: 2.5, desig: 0, maxLabels: 50 };
+  return { stars: 3.6, names: 1.8, desig: 0, maxLabels: 40 };
 }
 
 const cameraAzAlt = (basis: Mat3) => {
@@ -119,7 +119,7 @@ export default function SkyView({ location, date, dsos, palette, width, height }
   const [picking, setPicking] = useState(false);
   const [manualView, setManualView] = useState<{ az: number; alt: number } | null>(null);
 
-  const { basis: liveBasis, hasDeclination, unavailable } = useDeviceOrientation(!frozen);
+  const { basis: liveBasis, hasDeclination, compassAccuracy, unavailable } = useDeviceOrientation(!frozen);
   const frozenBasis = useRef<Mat3 | null>(null);
   if (!frozen && liveBasis) frozenBasis.current = liveBasis;
 
@@ -183,27 +183,19 @@ export default function SkyView({ location, date, dsos, palette, width, height }
     const nodes: ReactNode[] = [];
     const labels: LabelCandidate[] = [];
 
-    // Constellation figures and names.
-    frame.lines.forEach((polys, ci) =>
-      polys.forEach((poly, pi) => {
+    // Constellation figures, batched into one path (far cheaper to redraw than hundreds of lines).
+    let figures = '';
+    for (const polys of frame.lines) {
+      for (const poly of polys) {
         for (let k = 0; k + 5 < poly.length; k += 3) {
           const a = toScreen({ x: poly[k], y: poly[k + 1], z: poly[k + 2] });
           const b = toScreen({ x: poly[k + 3], y: poly[k + 4], z: poly[k + 5] });
           if (!a.inFront || !b.inFront || (!onScreen(a, 40) && !onScreen(b, 40))) continue;
-          nodes.push(
-            <Line
-              key={`c${ci}-${pi}-${k}`}
-              x1={a.x}
-              y1={a.y}
-              x2={b.x}
-              y2={b.y}
-              stroke={palette.muted}
-              strokeWidth={1}
-            />,
-          );
+          figures += `M${a.x.toFixed(1)} ${a.y.toFixed(1)}L${b.x.toFixed(1)} ${b.y.toFixed(1)}`;
         }
-      }),
-    );
+      }
+    }
+    if (figures) nodes.push(<Path key="figures" d={figures} stroke={palette.muted} strokeWidth={1} fill="none" />);
     if (fov >= 40) {
       frame.constellationLabels.forEach((c, i) => {
         const p = toScreen(c.enu);
@@ -252,7 +244,8 @@ export default function SkyView({ location, date, dsos, palette, width, height }
       );
     });
 
-    // Stars, brightest first.
+    // Stars, brightest first, batched into one path per size (and horizon side).
+    const starPaths = new Map<string, string>();
     for (let i = 0; i < STAR_COUNT; i++) {
       const mag = starMagnitude(i);
       if (mag > limits.stars) break;
@@ -260,8 +253,13 @@ export default function SkyView({ location, date, dsos, palette, width, height }
       const p = toScreen(v);
       if (!onScreen(p, 4)) continue;
       const below = v.z < 0;
-      const r = Math.min(5.5, Math.max(0.8, (limits.stars + 1.2 - mag) * 0.8));
-      nodes.push(<Circle key={`s${i}`} cx={p.x} cy={p.y} r={r} fill={palette.primary} opacity={below ? 0.35 : 1} />);
+      const r = Math.round(Math.min(5.5, Math.max(0.8, (limits.stars + 1.2 - mag) * 0.8)) * 2) / 2;
+      const bucket = `${r}|${below ? 1 : 0}`;
+      starPaths.set(
+        bucket,
+        (starPaths.get(bucket) ?? '') +
+          `M${(p.x - r).toFixed(1)} ${p.y.toFixed(1)}a${r} ${r} 0 1 0 ${2 * r} 0a${r} ${r} 0 1 0 ${-2 * r} 0`,
+      );
       const label = starLabel(i);
       const show = label && (mag <= limits.names || (limits.desig > 0 && mag <= limits.desig));
       if (show) {
@@ -277,6 +275,12 @@ export default function SkyView({ location, date, dsos, palette, width, height }
         });
       }
     }
+
+    starPaths.forEach((d, bucket) =>
+      nodes.push(
+        <Path key={`stars${bucket}`} d={d} fill={palette.primary} opacity={bucket.endsWith('|1') ? 0.35 : 1} />,
+      ),
+    );
 
     // Pole, Moon, planets, deep-sky targets.
     frame.objects.forEach((o) => {
@@ -502,9 +506,13 @@ export default function SkyView({ location, date, dsos, palette, width, height }
             {manual || frozen ? ' · drag to look around' : hasDeclination ? ' · true north' : ' · magnetic north'}
           </Text>
           {unavailable && <Text className="mt-2 text-xs text-warn">{unavailable} Drag the view to look around.</Text>}
+          {!manual && compassAccuracy !== null && compassAccuracy < 2 && (
+            <Text className="mt-2 text-xs text-warn">Compass needs calibrating: move the phone in a figure-8.</Text>
+          )}
           {!manual && (
             <Text className="mt-2 text-xs text-secondary">
-              Hold the phone up, screen facing you, back camera towards the sky. Keep clear of metal.
+              Hold the phone up and look "through" it: the BACK CAMERA points at the sky shown here. Keep clear of
+              metal.
             </Text>
           )}
         </View>

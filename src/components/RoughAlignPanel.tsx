@@ -1,10 +1,11 @@
 import * as Haptics from 'expo-haptics';
-import * as Location from 'expo-location';
-import { Accelerometer } from 'expo-sensors';
 import { useEffect, useRef, useState } from 'react';
-import { Platform, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
 
+import { Chip } from '@/components/ui';
 import { headingError, polarAxisTarget } from '@/engine/poleFinder';
+import { cameraDirection, enuToAzAlt, type Mat3 } from '@/engine/skyView';
+import { useDeviceOrientation } from '@/lib/useDeviceOrientation';
 import type { Palette } from '@/theme/palette';
 
 interface Props {
@@ -14,73 +15,12 @@ interface Props {
 
 const ALIGNED_DEG = 1;
 
-interface HeadingReading {
-  deg: number;
-  isTrue: boolean;
-  accuracy: number; // 0 (uncalibrated) … 3 (good)
-}
+/** Which line through the phone is measured. */
+type Axis = 'TOP_EDGE' | 'CAMERA';
 
-/** Compass heading (true north when the OS can apply declination) and phone tilt. */
-function useOrientation(active: boolean) {
-  const [heading, setHeading] = useState<HeadingReading | null>(null);
-  const [tiltDeg, setTiltDeg] = useState<number | null>(null);
-  const [unavailable, setUnavailable] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!active) return;
-    if (Platform.OS === 'web') {
-      setUnavailable('Compass and tilt sensors need the iOS or Android app.');
-      return;
-    }
-    let cancelled = false;
-    let headingSub: Location.LocationSubscription | null = null;
-    let motionSub: { remove: () => void } | null = null;
-
-    (async () => {
-      try {
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted') {
-          if (!cancelled) setUnavailable('Location permission is needed for a true-north compass heading.');
-        } else if (!cancelled) {
-          headingSub = await Location.watchHeadingAsync((h) => {
-            const isTrue = h.trueHeading >= 0;
-            setHeading({ deg: isTrue ? h.trueHeading : h.magHeading, isTrue, accuracy: h.accuracy });
-          });
-        }
-      } catch {
-        if (!cancelled) setUnavailable('No compass on this device.');
-      }
-      // Read the accelerometer directly: Android DeviceMotion events omit
-      // accelerationIncludingGravity until the first accelerometer sample arrives.
-      if (await Accelerometer.isAvailableAsync().catch(() => false)) {
-        Accelerometer.setUpdateInterval(100);
-        let smoothed: number | null = null;
-        motionSub = Accelerometer.addListener((g) => {
-          if (!g || !Number.isFinite(g.x) || !Number.isFinite(g.y) || !Number.isFinite(g.z)) return;
-          const norm = Math.hypot(g.x, g.y, g.z);
-          if (norm < 0.1) return;
-          // Elevation of the phone's long axis above the horizon (sign-agnostic across platforms).
-          const tilt = (Math.asin(Math.min(1, Math.abs(g.y) / norm)) * 180) / Math.PI;
-          smoothed = smoothed === null ? tilt : smoothed + 0.25 * (tilt - smoothed);
-          setTiltDeg(smoothed);
-        });
-      } else if (!cancelled) {
-        setUnavailable('No accelerometer available for the tilt reading.');
-      }
-      if (cancelled) {
-        headingSub?.remove();
-        motionSub?.remove();
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      headingSub?.remove();
-      motionSub?.remove();
-    };
-  }, [active]);
-
-  return { heading, tiltDeg, unavailable };
+/** Direction of the chosen phone axis: the top edge is device +y, the back camera −z. */
+function axisDirection(basis: Mat3, axis: Axis) {
+  return enuToAzAlt(axis === 'TOP_EDGE' ? { x: basis[3], y: basis[4], z: basis[5] } : cameraDirection(basis));
 }
 
 function Gauge({
@@ -138,16 +78,20 @@ function Gauge({
 }
 
 /**
- * Coarse polar alignment before the pole star is even visible: lay the phone on
- * the tracker's polar axis, top towards the pole, and zero both gauges.
+ * Coarse polar alignment before the pole star is even visible. Uses the same
+ * fused orientation as the sky view, so both agree when the phone is held the
+ * same way: lay it on the tracker with the top edge along the polar axis, or
+ * sight along the back camera.
  */
 export default function RoughAlignPanel({ latitude, palette }: Props) {
-  const { heading, tiltDeg, unavailable } = useOrientation(true);
+  const [axis, setAxis] = useState<Axis>('TOP_EDGE');
+  const { basis, hasDeclination, compassAccuracy, unavailable } = useDeviceOrientation(true);
   const target = polarAxisTarget(latitude);
   const towards = latitude >= 0 ? 'true north' : 'true south';
+  const reading = basis ? axisDirection(basis, axis) : null;
 
-  const headingErr = heading ? headingError(heading.deg, target.headingDeg) : null;
-  const tiltErr = tiltDeg === null ? null : target.altitudeDeg - tiltDeg;
+  const headingErr = reading ? headingError(reading.azimuthDeg, target.headingDeg) : null;
+  const tiltErr = reading ? target.altitudeDeg - reading.altitudeDeg : null;
   const aligned =
     headingErr !== null && tiltErr !== null && Math.abs(headingErr) <= ALIGNED_DEG && Math.abs(tiltErr) <= ALIGNED_DEG;
 
@@ -159,28 +103,41 @@ export default function RoughAlignPanel({ latitude, palette }: Props) {
     wasAligned.current = aligned;
   }, [aligned]);
 
+  const waiting = unavailable ? 'Sensors unavailable' : 'Waiting for sensors…';
   const headingAdvice =
     headingErr === null
-      ? unavailable
-        ? 'Compass unavailable'
-        : 'Waiting for compass…'
+      ? waiting
       : Math.abs(headingErr) <= ALIGNED_DEG
         ? 'On target'
         : `Rotate base ${Math.abs(headingErr).toFixed(1)}° ${headingErr > 0 ? 'right (clockwise)' : 'left (anticlockwise)'}`;
   const tiltAdvice =
     tiltErr === null
-      ? unavailable
-        ? 'Tilt sensor unavailable'
-        : 'Waiting for tilt sensor…'
+      ? waiting
       : Math.abs(tiltErr) <= ALIGNED_DEG
         ? 'On target'
         : `${tiltErr > 0 ? 'Raise' : 'Lower'} the polar axis ${Math.abs(tiltErr).toFixed(1)}°`;
 
   return (
     <View>
-      <Text className="text-sm text-primary">
-        Lay the phone flat along the tracker's polar axis, top edge pointing {towards}. Keep it clear of steel tripod
-        legs and counterweights — they deflect the compass.
+      <View className="flex-row gap-2">
+        <Chip
+          label="Phone on mount"
+          active={axis === 'TOP_EDGE'}
+          palette={palette}
+          onPress={() => setAxis('TOP_EDGE')}
+        />
+        <Chip
+          label="Sight with camera"
+          active={axis === 'CAMERA'}
+          palette={palette}
+          onPress={() => setAxis('CAMERA')}
+        />
+      </View>
+      <Text className="mt-3 text-sm text-primary">
+        {axis === 'TOP_EDGE'
+          ? `Lay the phone flat on the tracker, screen up, with its TOP EDGE pointing along the polar axis towards ${towards}. The gauges measure the top edge.`
+          : `Hold the phone so its BACK CAMERA looks along the polar axis towards ${towards} (like the Sky view). The gauges measure the camera direction.`}{' '}
+        Keep clear of steel tripod legs and counterweights — they deflect the compass.
       </Text>
 
       {unavailable && <Text className="mt-3 text-sm text-warn">{unavailable}</Text>}
@@ -188,22 +145,22 @@ export default function RoughAlignPanel({ latitude, palette }: Props) {
       <Gauge
         label="Azimuth"
         target={`${target.headingDeg.toFixed(0)}° (${towards})`}
-        current={heading ? `${heading.deg.toFixed(1)}°` : '—'}
+        current={reading ? `${reading.azimuthDeg.toFixed(1)}°` : '—'}
         error={headingErr}
         advice={headingAdvice}
         palette={palette}
       />
-      {heading && !heading.isTrue && (
+      {reading && !hasDeclination && (
         <Text className="mt-1 text-xs text-warn">Magnetic heading only — no declination correction available.</Text>
       )}
-      {heading && heading.accuracy < 2 && (
+      {compassAccuracy !== null && compassAccuracy < 2 && (
         <Text className="mt-1 text-xs text-warn">Compass needs calibrating: move the phone in a figure-8.</Text>
       )}
 
       <Gauge
         label="Altitude"
         target={`${target.altitudeDeg.toFixed(1)}° (your latitude)`}
-        current={tiltDeg === null ? '—' : `${tiltDeg.toFixed(1)}°`}
+        current={reading ? `${reading.altitudeDeg.toFixed(1)}°` : '—'}
         error={tiltErr}
         advice={tiltAdvice}
         palette={palette}
