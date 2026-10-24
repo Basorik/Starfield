@@ -135,9 +135,10 @@ export default function RoughAlignPanel({ latitude, palette }: Props) {
       </View>
       <Text className="mt-3 text-sm text-primary">
         {axis === 'TOP_EDGE'
-          ? `Lay the phone flat on the tracker, screen up, with its TOP EDGE pointing along the polar axis towards ${towards}. The gauges measure the top edge.`
+          ? `Mount the phone (any way round, e.g. in a tracker phone holder) with its TOP EDGE parallel to the polar axis, pointing towards ${towards}. The gauges measure the top edge. Check: spinning the tracker about its axis should barely change the readings.`
           : `Hold the phone so its BACK CAMERA looks along the polar axis towards ${towards} (like the Sky view). The gauges measure the camera direction.`}{' '}
-        Keep clear of steel tripod legs and counterweights — they deflect the compass.
+        Steel tripod legs, counterweights and the tracker's motor magnets can deflect the compass; altitude is
+        unaffected.
       </Text>
 
       {unavailable && <Text className="mt-3 text-sm text-warn">{unavailable}</Text>}
