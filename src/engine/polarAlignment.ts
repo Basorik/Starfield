@@ -19,7 +19,8 @@ export const OCTANS_STARS: CatalogStar[] = [
   { name: 'σ Oct', raHours: 21.1461, decDeg: -88.9564, mag: 5.4 },
   { name: 'χ Oct', raHours: 18.9128, decDeg: -87.6058, mag: 5.3 },
   { name: 'τ Oct', raHours: 23.4678, decDeg: -87.4822, mag: 5.5 },
-  { name: 'υ Oct', raHours: 22.6289, decDeg: -85.9672, mag: 5.8 },
+  // Hipparcos (HIP 111196); the 22.6289h often quoted for υ Oct is ~1.5° of RA off.
+  { name: 'υ Oct', raHours: 22.5271, decDeg: -85.9673, mag: 5.8 },
 ];
 
 export function hemisphereFor(latitudeDeg: number): Hemisphere {

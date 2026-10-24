@@ -4,16 +4,11 @@ import { useEffect, useState } from 'react';
 import { Platform } from 'react-native';
 
 import { mod } from '@/engine/coords';
-import { cameraPointing, type Vec3 } from '@/engine/poleFinder';
+import type { Vec3 } from '@/engine/poleFinder';
+import { deviceBasis, type Mat3 } from '@/engine/skyView';
 
-export interface CameraPointing {
-  azimuthDeg: number; // from true north when declination is known, else magnetic
-  altitudeDeg: number;
-  hasDeclination: boolean;
-}
-
-const UPDATE_MS = 100;
-const SMOOTHING = 0.2; // low-pass weight of each new sample
+const UPDATE_MS = 66; // ~15 Hz
+const SMOOTHING = 0.25; // low-pass weight of each new sample
 
 const finite = (v: Vec3 | undefined | null): v is Vec3 =>
   !!v && Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z);
@@ -28,21 +23,23 @@ const blend = (prev: Vec3 | null, next: Vec3): Vec3 =>
     : next;
 
 /**
- * Where the phone's back camera points, from the accelerometer and
- * magnetometer. Magnetic declination comes from the OS compass
- * (trueHeading − magHeading), which applies its own geomagnetic model offline.
+ * The phone's orientation as a true-north ENU → device matrix, from the
+ * accelerometer and magnetometer. Magnetic declination comes from the OS
+ * compass (trueHeading − magHeading), which applies its own geomagnetic model
+ * offline; without it the basis is referenced to magnetic north.
  */
-export function useCameraPointing(active: boolean) {
-  const [pointing, setPointing] = useState<CameraPointing | null>(null);
+export function useDeviceOrientation(active: boolean) {
+  const [basis, setBasis] = useState<Mat3 | null>(null);
+  const [hasDeclination, setHasDeclination] = useState(false);
   const [unavailable, setUnavailable] = useState<string | null>(null);
 
   useEffect(() => {
     if (!active) {
-      setPointing(null);
+      setBasis(null);
       return;
     }
     if (Platform.OS === 'web') {
-      setUnavailable('Live aim needs the iOS or Android app.');
+      setUnavailable('Motion sensors need the iOS or Android app.');
       return;
     }
 
@@ -80,26 +77,24 @@ export function useCameraPointing(active: boolean) {
         const { status } = await Location.getForegroundPermissionsAsync();
         if (status === 'granted' && !cancelled) {
           const headingSub = await Location.watchHeadingAsync((h) => {
-            if (h.trueHeading >= 0 && h.magHeading >= 0)
+            if (h.trueHeading >= 0 && h.magHeading >= 0) {
               declination = mod(h.trueHeading - h.magHeading + 180, 360) - 180;
+            }
           });
           if (cancelled) headingSub.remove();
           else subs.push(headingSub);
         }
       } catch {
-        // No declination: the marker falls back to magnetic north.
+        // No declination: the view falls back to magnetic north.
       }
     })();
 
     const timer = setInterval(() => {
       if (!up || !field) return;
-      const p = cameraPointing(up, field);
-      if (!p) return;
-      setPointing({
-        azimuthDeg: mod(p.azimuthDeg + (declination ?? 0), 360),
-        altitudeDeg: p.altitudeDeg,
-        hasDeclination: declination !== null,
-      });
+      const next = deviceBasis(up, field, declination ?? 0);
+      if (!next) return;
+      setBasis(next);
+      setHasDeclination(declination !== null);
     }, UPDATE_MS);
 
     return () => {
@@ -109,5 +104,5 @@ export function useCameraPointing(active: boolean) {
     };
   }, [active]);
 
-  return { pointing, unavailable };
+  return { basis, hasDeclination, unavailable };
 }

@@ -6,7 +6,9 @@ The app has two modules, and both run fully offline using `astronomy-engine`:
 
 1. **Polar Scope.** Three views:
    - **Reticle** shows where Polaris sits on the Sky-Watcher 12-hour or iOptron 0–11 clock dial. In the Southern Hemisphere it instead draws the live orientation of the Octans trapezoid (σ, χ, τ, υ Octantis). You can switch between the inverted polar-scope view and the naked-eye view, and scrub the time by up to ±6 hours.
-   - **Finder** is a naked-eye star chart around the pole, with your horizon drawn in and star-hop guides: Crux and the Pointers in the south, the Big Dipper pointers in the north.
+   - **Finder** has two views:
+     - **Sky view** is a Stellarium-style live view of whatever patch of sky the phone points at. It shows labelled stars down to magnitude 5.8, constellation figures, the horizon and compass points, deep-sky targets, the Moon and planets. Pick the celestial pole or any object from the search sheet, and an arrow plus "turn right 12°, raise 5°" directions lead you to it. **Hold** freezes the view so you can drag around it; without motion sensors (web) it is drag-to-pan.
+     - **Pole chart** is the naked-eye star-hop chart around the pole, with your horizon and the Crux / Pointers / Big Dipper guides.
    - **Rough align** uses the phone's compass (true north where the OS can correct for magnetic declination) and its tilt sensor to set the tracker's azimuth and altitude before the pole star is visible.
 
    The screen dims while this tab is open and goes back to your normal brightness when you leave it.
@@ -83,3 +85,12 @@ The tests cross-check twilight, altitudes and hour angles against separate Meeus
 | Pole finder chart, rough alignment, screen dimming | Tomorrow / any future date, dark-sky calendar |
 | Tonight's top 3 ranked targets | Full catalog, focal-length filters, custom RA/Dec targets |
 | Static altitude chart, horizon floor, Moon avoidance, darkness mode | Saved GPS sites, interactive chart inspector |
+
+## Third-party data
+
+The star positions, names and constellation figures in `src/data/skyCatalog.ts` come from [d3-celestial](https://github.com/ofrohn/d3-celestial) (BSD-3-Clause, © Olaf Frohn); see `THIRD_PARTY_D3_CELESTIAL_LICENSE.txt`. Regenerate with:
+
+```bash
+npm pack d3-celestial && tar xzf d3-celestial-*.tgz
+node scripts/build-sky-catalog.mjs package/data
+```

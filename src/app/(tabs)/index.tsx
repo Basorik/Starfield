@@ -11,11 +11,12 @@ import OffsetSlider from '@/components/OffsetSlider';
 import PoleFinderSVG from '@/components/PoleFinderSVG';
 import ReticleSVG from '@/components/ReticleSVG';
 import RoughAlignPanel from '@/components/RoughAlignPanel';
+import SkyView from '@/components/SkyView';
 import { Card, Chip } from '@/components/ui';
+import { DSO_CATALOG } from '@/data/dsoCatalog';
 import { computePolarAlignment, formatSiderealTime } from '@/engine/polarAlignment';
-import { computePoleFinder, headingError, horizontalToFinder, polarAxisTarget } from '@/engine/poleFinder';
+import { computePoleFinder } from '@/engine/poleFinder';
 import { formatLatLon, formatSignedHours, formatTime } from '@/lib/format';
-import { useCameraPointing } from '@/lib/useCameraPointing';
 import { useDimScreen } from '@/lib/useDimScreen';
 import { RIG_PRESETS, useAppStore } from '@/store/useAppStore';
 
@@ -40,10 +41,11 @@ const FINDER_HELP = {
 };
 
 export default function PolarScopeScreen() {
-  const { palette, location, invertScope, reticleType, rigPreset, isPro, dimScreen, dimLevel, update } = useAppStore();
+  const { palette, location, invertScope, reticleType, rigPreset, isPro, dimScreen, dimLevel, customTargets, update } =
+    useAppStore();
   const [mode, setMode] = useState<ViewMode>('RETICLE');
-  const [liveAim, setLiveAim] = useState(true);
-  const { pointing, unavailable: aimUnavailable } = useCameraPointing(mode === 'FINDER' && liveAim);
+  const [finderView, setFinderView] = useState<'SKY' | 'CHART'>('SKY');
+  const skyObjects = useMemo(() => [...DSO_CATALOG, ...customTargets], [customTargets]);
   useDimScreen(dimScreen, dimLevel);
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
@@ -71,20 +73,13 @@ export default function PolarScopeScreen() {
   );
 
   const finder = useMemo(
-    () => (mode === 'FINDER' ? computePoleFinder(location, viewTime) : null),
-    [mode, location, viewTime],
+    () => (mode === 'FINDER' && finderView === 'CHART' ? computePoleFinder(location, viewTime) : null),
+    [mode, finderView, location, viewTime],
   );
 
-  const aim =
-    finder && pointing
-      ? horizontalToFinder(pointing.azimuthDeg, pointing.altitudeDeg, location.latitude, finder.radiusDeg)
-      : null;
-  const poleTarget = polarAxisTarget(location.latitude);
-  const aimTurn = pointing ? headingError(pointing.azimuthDeg, poleTarget.headingDeg) : 0;
-  const aimRaise = pointing ? poleTarget.altitudeDeg - pointing.altitudeDeg : 0;
-  const onPole = pointing !== null && Math.abs(aimTurn) <= 2 && Math.abs(aimRaise) <= 2;
-
   const reticleSize = Math.min(width - 32, height * 0.48, 440);
+  const skyWidth = Math.min(width - 32, 560);
+  const skyHeight = Math.min(skyWidth * 1.2, height * 0.62);
   const isNorth = state.hemisphere === 'NORTH';
   const rigLabel = RIG_PRESETS.find((r) => r.key === rigPreset)?.label ?? '';
   const dialName = reticleType === 'IOPTRON' ? 'iOptron' : 'Sky-Watcher';
@@ -153,56 +148,53 @@ export default function PolarScopeScreen() {
         </View>
       )}
 
-      {mode === 'FINDER' && finder && (
+      {mode === 'FINDER' && (
         <>
-          <View className="mt-4 items-center">
-            <PoleFinderSVG finder={finder} palette={palette} size={reticleSize} aim={liveAim ? aim : null} />
+          <View className="mt-3 flex-row gap-2">
+            <Chip
+              label="Sky view"
+              active={finderView === 'SKY'}
+              palette={palette}
+              onPress={() => setFinderView('SKY')}
+            />
+            <Chip
+              label="Pole chart"
+              active={finderView === 'CHART'}
+              palette={palette}
+              onPress={() => setFinderView('CHART')}
+            />
           </View>
-          <Card className="mt-3">
-            <Text className="text-xs uppercase tracking-widest text-secondary">
-              Star-hop to the {isNorth ? 'north' : 'south'} celestial pole · naked eye
-            </Text>
-            <Text className="mt-1 text-sm text-primary">{FINDER_HELP[finder.hemisphere]}</Text>
-            <Text className="mt-2 text-xs text-secondary">
-              Pole altitude {finder.poleAltitudeDeg.toFixed(1)}° · stars below your horizon are dimmed · rings every 10°
-            </Text>
-          </Card>
-          <Card className="mt-3">
-            <View className="flex-row items-center">
-              <Text className="flex-1 text-xs uppercase tracking-widest text-secondary">Live aim</Text>
-              <Chip
-                label={liveAim ? 'On' : 'Off'}
-                active={liveAim}
+
+          {finderView === 'SKY' && (
+            <View className="mt-3">
+              <SkyView
+                location={location}
+                date={viewTime}
+                dsos={skyObjects}
                 palette={palette}
-                onPress={() => setLiveAim(!liveAim)}
+                width={skyWidth}
+                height={skyHeight}
               />
             </View>
-            {liveAim && aimUnavailable && <Text className="mt-2 text-sm text-warn">{aimUnavailable}</Text>}
-            {liveAim && !aimUnavailable && !pointing && (
-              <Text className="mt-2 text-sm text-secondary">Waiting for the compass and tilt sensors…</Text>
-            )}
-            {liveAim && pointing && (
-              <>
-                <Text className={`mt-2 text-lg font-bold ${onPole ? 'text-accent' : 'text-primary'}`}>
-                  {onPole
-                    ? 'On the pole — look here'
-                    : [
-                        Math.abs(aimTurn) > 2 && `${aimTurn > 0 ? 'Right' : 'Left'} ${Math.abs(aimTurn).toFixed(0)}°`,
-                        Math.abs(aimRaise) > 2 && `${aimRaise > 0 ? 'up' : 'down'} ${Math.abs(aimRaise).toFixed(0)}°`,
-                      ]
-                        .filter(Boolean)
-                        .join(', ')}
+          )}
+
+          {finderView === 'CHART' && finder && (
+            <>
+              <View className="mt-4 items-center">
+                <PoleFinderSVG finder={finder} palette={palette} size={reticleSize} />
+              </View>
+              <Card className="mt-3">
+                <Text className="text-xs uppercase tracking-widest text-secondary">
+                  Star-hop to the {isNorth ? 'north' : 'south'} celestial pole · naked eye
                 </Text>
-                <Text className="mt-1 font-mono text-xs text-secondary">
-                  Phone az {pointing.azimuthDeg.toFixed(0)}° · alt {pointing.altitudeDeg.toFixed(0)}°
-                  {pointing.hasDeclination ? ' (true north)' : ' (magnetic — no declination)'}
+                <Text className="mt-1 text-sm text-primary">{FINDER_HELP[finder.hemisphere]}</Text>
+                <Text className="mt-2 text-xs text-secondary">
+                  Pole altitude {finder.poleAltitudeDeg.toFixed(1)}° · stars below your horizon are dimmed · rings every
+                  10°
                 </Text>
-              </>
-            )}
-            <Text className="mt-2 text-xs text-secondary">
-              Hold the phone up with the screen facing you and the back camera towards the sky. Stay clear of metal.
-            </Text>
-          </Card>
+              </Card>
+            </>
+          )}
         </>
       )}
 
